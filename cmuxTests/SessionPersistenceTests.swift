@@ -7,6 +7,22 @@ import XCTest
 #endif
 
 final class SessionPersistenceTests: XCTestCase {
+    func testUITestV2BridgePathsMapRequestToProcessingAndResponse() {
+#if DEBUG
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cmux-ui-v2-bridge-tests", isDirectory: true)
+        let requestURL = directory.appendingPathComponent("abc.request.json")
+
+        let processingURL = AppDelegate.uiTestV2BridgeProcessingURL(for: requestURL)
+        let responseURL = AppDelegate.uiTestV2BridgeResponseURL(for: processingURL)
+
+        XCTAssertEqual(processingURL.lastPathComponent, "abc.processing.json")
+        XCTAssertEqual(responseURL.lastPathComponent, "abc.response.json")
+#else
+        XCTFail("DEBUG-only lifecycle bridge helpers should be available in tests")
+#endif
+    }
+
     func testSaveAndLoadRoundTripWithCustomSnapshotPath() throws {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("cmux-session-tests-\(UUID().uuidString)", isDirectory: true)
