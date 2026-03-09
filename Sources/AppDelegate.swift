@@ -6907,7 +6907,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 "socketMode": "off",
                 "socketReady": "0",
                 "workspaceReady": "0",
+                "windowReady": "0",
+                "surfaceReady": "0",
                 "currentWorkspaceId": "",
+                "currentWindowId": "",
+                "currentSurfaceId": "",
                 "socketPingResponse": "",
                 "socketIsRunning": "0",
                 "socketAcceptLoopAlive": "0",
@@ -6923,7 +6927,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             "socketMode": config.mode.rawValue,
             "socketReady": "pending",
             "workspaceReady": "pending",
+            "windowReady": "pending",
+            "surfaceReady": "pending",
             "currentWorkspaceId": "",
+            "currentWindowId": "",
+            "currentSurfaceId": "",
             "socketPingResponse": "",
         ], at: path)
 
@@ -6936,14 +6944,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             let socketPath = config.path
             let socketMode = config.mode.rawValue
             let dataPath = path
+            let currentWorkspaceId = currentWorkspaceIdForSocketSanity()
+            let workspaceReady = !currentWorkspaceId.isEmpty
+            let currentWindowId = currentWindowIdForSocketSanity()
+            let windowReady = !currentWindowId.isEmpty
+            let currentSurfaceId = currentSurfaceIdForSocketSanity()
+            let surfaceReady = !currentSurfaceId.isEmpty
 
-            DispatchQueue.global(qos: .utility).async { [weak self] in
+            DispatchQueue.global(qos: .utility).async {
                 let pingResponse = health.isHealthy
                     ? TerminalController.probeSocketCommand("ping", at: socketPath, timeout: 1.0)
                     : nil
                 let isReady = health.isHealthy && pingResponse == "PONG"
-                let currentWorkspaceId = self?.currentWorkspaceIdForSocketSanity() ?? ""
-                let workspaceReady = !currentWorkspaceId.isEmpty
                 let failureSignals = {
                     var signals = health.failureSignals
                     if health.isHealthy && pingResponse != "PONG" {
@@ -6959,7 +6971,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                         "socketMode": socketMode,
                         "socketReady": isReady ? "1" : (isTimedOut ? "0" : "pending"),
                         "workspaceReady": workspaceReady ? "1" : (isTimedOut ? "0" : "pending"),
+                        "windowReady": windowReady ? "1" : (isTimedOut ? "0" : "pending"),
+                        "surfaceReady": surfaceReady ? "1" : (isTimedOut ? "0" : "pending"),
                         "currentWorkspaceId": currentWorkspaceId,
+                        "currentWindowId": currentWindowId,
+                        "currentSurfaceId": currentSurfaceId,
                         "socketPingResponse": pingResponse ?? "",
                         "socketIsRunning": health.isRunning ? "1" : "0",
                         "socketAcceptLoopAlive": health.acceptLoopAlive ? "1" : "0",
@@ -6967,7 +6983,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                         "socketPathExists": health.socketPathExists ? "1" : "0",
                         "socketFailureSignals": failureSignals,
                     ], at: dataPath)
-                    guard !isTimedOut, !(isReady && workspaceReady) else { return }
+                    guard !isTimedOut, !(isReady && workspaceReady && windowReady && surfaceReady) else { return }
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                         publish()
                     }
@@ -6984,6 +7000,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         if let firstWorkspaceId = tabManager?.tabs.first?.id {
             return firstWorkspaceId.uuidString
+        }
+        return ""
+    }
+
+    private func currentWindowIdForSocketSanity() -> String {
+        guard let tabManager,
+              let currentWindowId = windowId(for: tabManager) else {
+            return ""
+        }
+        return currentWindowId.uuidString
+    }
+
+    private func currentSurfaceIdForSocketSanity() -> String {
+        if let focusedPanelId = tabManager?.selectedWorkspace?.focusedPanelId {
+            return focusedPanelId.uuidString
+        }
+        if let selectedWorkspaceId = tabManager?.selectedTabId,
+           let focusedPanelId = tabManager?.focusedPanelId(for: selectedWorkspaceId) {
+            return focusedPanelId.uuidString
         }
         return ""
     }

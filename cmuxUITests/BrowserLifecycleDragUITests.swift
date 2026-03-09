@@ -48,6 +48,8 @@ final class BrowserLifecycleDragUITests: XCTestCase {
             socketPath = expectedSocketPath
         }
         XCTAssertEqual(socketState["socketReady"], "1", "Expected ready socket. state=\(socketState)")
+        XCTAssertEqual(socketState["windowReady"], "1", "Expected ready current window. state=\(socketState)")
+        XCTAssertEqual(socketState["surfaceReady"], "1", "Expected ready current surface. state=\(socketState)")
         XCTAssertEqual(socketState["socketPingResponse"], "PONG", "Expected healthy socket ping. state=\(socketState)")
 
         guard let originalWorkspaceId = waitForCurrentWorkspaceId(timeout: 20.0) else {
@@ -55,11 +57,9 @@ final class BrowserLifecycleDragUITests: XCTestCase {
             return
         }
 
-        guard let currentWindow = v2Call("window.current"),
-              let currentWindowResult = currentWindow["result"] as? [String: Any],
-              let currentWindowId = currentWindowResult["window_id"] as? String,
+        guard let currentWindowId = socketState["currentWindowId"],
               !currentWindowId.isEmpty else {
-            XCTFail("window.current did not return window_id")
+            XCTFail("Socket sanity did not publish currentWindowId. state=\(socketState)")
             return
         }
 
@@ -149,6 +149,8 @@ final class BrowserLifecycleDragUITests: XCTestCase {
             if let data = loadSocketSanityData(),
                data["socketReady"] == "1",
                data["workspaceReady"] == "1",
+               data["windowReady"] == "1",
+               data["surfaceReady"] == "1",
                data["socketPingResponse"] == "PONG" {
                 return data
             }
@@ -300,19 +302,7 @@ private final class BrowserLifecycleV2SocketClient {
         for _ in 0..<Self.readinessAttempts {
             if let response = callOnce(method: "system.ping"),
                let result = response["result"] as? [String: Any],
-               result["pong"] as? Bool == true,
-               let window = callOnce(method: "window.current"),
-               let windowResult = window["result"] as? [String: Any],
-               let windowId = windowResult["window_id"] as? String,
-               !windowId.isEmpty,
-               let workspace = callOnce(method: "workspace.current"),
-               let workspaceResult = workspace["result"] as? [String: Any],
-               let workspaceId = workspaceResult["workspace_id"] as? String,
-               !workspaceId.isEmpty,
-               let surface = callOnce(method: "surface.current"),
-               let surfaceResult = surface["result"] as? [String: Any],
-               let surfaceId = surfaceResult["surface_id"] as? String,
-               !surfaceId.isEmpty {
+               result["pong"] as? Bool == true {
                 return true
             }
             Thread.sleep(forTimeInterval: Self.readinessDelay)
