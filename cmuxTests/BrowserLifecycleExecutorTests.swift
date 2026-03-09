@@ -69,6 +69,7 @@ final class BrowserLifecycleExecutorTests: XCTestCase {
         XCTAssertEqual(overlaid.state, .boundVisible)
         XCTAssertEqual(overlaid.residency, .visibleInActiveWindow)
         XCTAssertTrue(overlaid.activeWindowMembership)
+        XCTAssertEqual(overlaid.anchor?.windowNumber, 41)
     }
 
     func testCurrentRecordUsesHiddenPortalBindingForParkedBrowserResidency() {

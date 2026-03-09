@@ -213,6 +213,38 @@ enum BrowserLifecycleExecutor {
         return binding.windowNumber == windowNumber || binding.anchorWindowNumber == windowNumber
     }
 
+    private static func anchorSnapshot(
+        current: PanelLifecycleRecordSnapshot,
+        binding: BrowserLifecycleExecutorBindingSnapshot
+    ) -> PanelLifecycleAnchorSnapshot? {
+        if let anchor = current.anchor {
+            let windowNumber = anchor.windowNumber ?? binding.anchorWindowNumber ?? binding.windowNumber
+            return PanelLifecycleAnchorSnapshot(
+                anchorId: anchor.anchorId,
+                anchorGeneration: anchor.anchorGeneration,
+                windowNumber: windowNumber,
+                hasSuperview: anchor.hasSuperview,
+                attachedToWindow: anchor.attachedToWindow || windowNumber != nil,
+                hidden: anchor.hidden && (!binding.visibleInUI || binding.containerHidden),
+                geometryRevision: anchor.geometryRevision,
+                source: anchor.source
+            )
+        }
+
+        guard let anchorId = binding.anchorId else { return nil }
+        let windowNumber = binding.anchorWindowNumber ?? binding.windowNumber
+        return PanelLifecycleAnchorSnapshot(
+            anchorId: anchorId,
+            anchorGeneration: binding.guardGeneration ?? current.generation,
+            windowNumber: windowNumber,
+            hasSuperview: binding.attachedToPortalHost,
+            attachedToWindow: windowNumber != nil,
+            hidden: !binding.visibleInUI || binding.containerHidden,
+            geometryRevision: 0,
+            source: "binding"
+        )
+    }
+
     static func currentRecord(
         _ current: PanelLifecycleRecordSnapshot,
         applying binding: BrowserLifecycleExecutorBindingSnapshot?,
@@ -253,7 +285,7 @@ enum BrowserLifecycleExecutor {
                     current.backendProfile.focusPolicy == .firstResponder,
                 accessibilityParticipation: current.backendProfile.accessibilityPolicy == .activeVisibleTree,
                 backendProfile: current.backendProfile,
-                anchor: current.anchor
+                anchor: anchorSnapshot(current: current, binding: binding)
             )
         }
 
@@ -285,7 +317,7 @@ enum BrowserLifecycleExecutor {
             responderEligible: false,
             accessibilityParticipation: false,
             backendProfile: current.backendProfile,
-            anchor: current.anchor
+            anchor: anchorSnapshot(current: current, binding: binding)
         )
     }
 
