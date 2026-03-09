@@ -12,6 +12,7 @@ interface SplitTreeViewProps {
   node: TreeNode
   groups: Record<string, PaneGroup>
   focusedGroupId: string
+  isSplit: boolean
   onFocusGroup: (groupId: string) => void
   onResize: (splitId: string, ratio: number) => void
   onSelectTab: (groupId: string, tabId: string) => void
@@ -29,6 +30,7 @@ export function SplitTreeView({
   node,
   groups,
   focusedGroupId,
+  isSplit,
   onFocusGroup,
   onResize,
   onSelectTab,
@@ -84,6 +86,7 @@ export function SplitTreeView({
             tabId={group.activeTabId}
             surfaceId={node.id}
             isFocused={isFocused}
+            isSplit={isSplit}
             onFocus={() => onFocusGroup(node.id)}
             dropZone={activeDropZone}
           />
@@ -91,6 +94,7 @@ export function SplitTreeView({
           <SurfacePlaceholder
             surfaceId={node.id}
             isFocused={isFocused}
+            isSplit={isSplit}
             onFocus={() => onFocusGroup(node.id)}
             dropZone={activeDropZone}
           />
@@ -120,6 +124,7 @@ export function SplitTreeView({
           node={node.left}
           groups={groups}
           focusedGroupId={focusedGroupId}
+          isSplit={isSplit}
           onFocusGroup={onFocusGroup}
           onResize={handleResize}
           onSelectTab={onSelectTab}
@@ -143,6 +148,7 @@ export function SplitTreeView({
           node={node.right}
           groups={groups}
           focusedGroupId={focusedGroupId}
+          isSplit={isSplit}
           onFocusGroup={onFocusGroup}
           onResize={handleResize}
           onSelectTab={onSelectTab}

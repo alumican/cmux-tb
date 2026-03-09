@@ -3,6 +3,7 @@ import {
   type Workspace,
   type PaneGroup,
   type GroupTab,
+  type Notification,
   createPaneGroup,
   createWorkspace,
   splitLeaf,
@@ -48,6 +49,16 @@ export type Action =
   | { type: "FOCUS_DIRECTION"; dir: "left" | "right" | "up" | "down" }
   // Title updates from OSC (searches all workspaces)
   | { type: "UPDATE_TAB_TITLE"; tabId: string; title: string }
+  // Metadata updates from session_metadata (searches all workspaces)
+  | { type: "UPDATE_TAB_METADATA"; tabId: string; metadata: {
+      title?: string; description?: string; cwd?: string; dir?: string
+      branch?: string; isDirty?: boolean; ports?: number[]
+    }}
+  // Notification actions
+  | { type: "SET_NOTIFICATIONS"; notifications: Notification[] }
+  | { type: "ADD_NOTIFICATION"; notification: Notification }
+  | { type: "MARK_NOTIFICATION_READ"; notificationId: number }
+  | { type: "CLEAR_NOTIFICATIONS"; sessionId?: number }
 
 export function createInitialState(): AppState {
   const ws = createWorkspace()
@@ -55,6 +66,7 @@ export function createInitialState(): AppState {
     workspaces: { [ws.id]: ws },
     workspaceOrder: [ws.id],
     activeWorkspaceId: ws.id,
+    notifications: [],
   }
 }
 
@@ -103,6 +115,19 @@ function getWorkspaceTitle(ws: Workspace): string {
   return tab?.title ?? ws.title
 }
 
+/** Build a subtitle string from the focused tab's metadata */
+function getWorkspaceSubtitle(ws: Workspace): string | undefined {
+  const group = ws.groups[ws.focusedGroupId]
+  if (!group) return undefined
+  const tab = group.tabs.find((t) => t.id === group.activeTabId)
+  if (!tab) return undefined
+  if (tab.description) return tab.description
+  const parts: string[] = []
+  if (tab.branch) parts.push(tab.branch + (tab.isDirty ? "*" : ""))
+  if (tab.dir) parts.push(tab.dir)
+  return parts.length > 0 ? parts.join(" \u00b7 ") : undefined
+}
+
 export function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
     // --- Workspace-level actions ---
@@ -128,6 +153,7 @@ export function reducer(state: AppState, action: Action): AppState {
         newActive = newOrder[Math.min(idx, newOrder.length - 1)]
       }
       return {
+        ...state,
         workspaces: remaining,
         workspaceOrder: newOrder,
         activeWorkspaceId: newActive,
@@ -204,10 +230,17 @@ export function reducer(state: AppState, action: Action): AppState {
       const ws = activeWs(state)
       const group = ws.groups[action.groupId]
       if (!group || group.activeTabId === action.tabId) return state
-      return updateActiveWs(state, {
-        groups: { ...ws.groups, [group.id]: { ...group, activeTabId: action.tabId } },
-        focusedGroupId: action.groupId,
-      })
+      const updatedGroups = { ...ws.groups, [group.id]: { ...group, activeTabId: action.tabId } }
+      const updatedWs = { ...ws, groups: updatedGroups, focusedGroupId: action.groupId }
+      const tab = group.tabs.find((t) => t.id === action.tabId)
+      if (tab && action.groupId === ws.focusedGroupId) {
+        updatedWs.title = tab.title
+        updatedWs.subtitle = getWorkspaceSubtitle(updatedWs)
+      }
+      return {
+        ...state,
+        workspaces: { ...state.workspaces, [ws.id]: updatedWs },
+      }
     }
 
     case "NEXT_TAB": {
@@ -378,7 +411,13 @@ export function reducer(state: AppState, action: Action): AppState {
       const ws = activeWs(state)
       if (ws.focusedGroupId === action.groupId) return state
       if (!ws.groups[action.groupId]) return state
-      return updateActiveWs(state, { focusedGroupId: action.groupId })
+      const updated = { ...ws, focusedGroupId: action.groupId }
+      updated.title = getWorkspaceTitle(updated)
+      updated.subtitle = getWorkspaceSubtitle(updated)
+      return {
+        ...state,
+        workspaces: { ...state.workspaces, [ws.id]: updated },
+      }
     }
 
     case "EQUALIZE_SPLITS": {
@@ -390,21 +429,30 @@ export function reducer(state: AppState, action: Action): AppState {
       const ws = activeWs(state)
       const next = getAdjacentLeaf(ws.root, ws.focusedGroupId, "next")
       if (!next || next === ws.focusedGroupId) return state
-      return updateActiveWs(state, { focusedGroupId: next })
+      const updated = { ...ws, focusedGroupId: next }
+      updated.title = getWorkspaceTitle(updated)
+      updated.subtitle = getWorkspaceSubtitle(updated)
+      return { ...state, workspaces: { ...state.workspaces, [ws.id]: updated } }
     }
 
     case "FOCUS_PREV_GROUP": {
       const ws = activeWs(state)
       const prev = getAdjacentLeaf(ws.root, ws.focusedGroupId, "prev")
       if (!prev || prev === ws.focusedGroupId) return state
-      return updateActiveWs(state, { focusedGroupId: prev })
+      const updated = { ...ws, focusedGroupId: prev }
+      updated.title = getWorkspaceTitle(updated)
+      updated.subtitle = getWorkspaceSubtitle(updated)
+      return { ...state, workspaces: { ...state.workspaces, [ws.id]: updated } }
     }
 
     case "FOCUS_DIRECTION": {
       const ws = activeWs(state)
       const neighbor = getSpatialNeighbor(ws.root, ws.focusedGroupId, action.dir)
       if (!neighbor || neighbor === ws.focusedGroupId) return state
-      return updateActiveWs(state, { focusedGroupId: neighbor })
+      const updated = { ...ws, focusedGroupId: neighbor }
+      updated.title = getWorkspaceTitle(updated)
+      updated.subtitle = getWorkspaceSubtitle(updated)
+      return { ...state, workspaces: { ...state.workspaces, [ws.id]: updated } }
     }
 
     // --- Title updates (search all workspaces) ---
@@ -422,9 +470,10 @@ export function reducer(state: AppState, action: Action): AppState {
               ...ws,
               groups: { ...ws.groups, [gid]: { ...group, tabs: newTabs } },
             }
-            // Update workspace title if this is the focused pane
-            if (gid === ws.focusedGroupId) {
+            // Update workspace title/subtitle if this is the focused pane's active tab
+            if (gid === ws.focusedGroupId && group.activeTabId === action.tabId) {
               updatedWs.title = action.title
+              updatedWs.subtitle = getWorkspaceSubtitle(updatedWs)
             }
             return {
               ...state,
@@ -435,6 +484,72 @@ export function reducer(state: AppState, action: Action): AppState {
       }
       return state
     }
+
+    case "UPDATE_TAB_METADATA": {
+      const meta = action.metadata
+      for (const [wsId, ws] of Object.entries(state.workspaces)) {
+        for (const [gid, group] of Object.entries(ws.groups)) {
+          const idx = group.tabs.findIndex((t) => t.id === action.tabId)
+          if (idx !== -1) {
+            const tab = group.tabs[idx]
+            const newTab = { ...tab }
+            if (meta.title !== undefined) newTab.title = meta.title
+            if (meta.description !== undefined) newTab.description = meta.description || undefined
+            if (meta.cwd !== undefined) newTab.cwd = meta.cwd || undefined
+            if (meta.dir !== undefined) newTab.dir = meta.dir || undefined
+            if (meta.branch !== undefined) newTab.branch = meta.branch || undefined
+            if (meta.isDirty !== undefined) newTab.isDirty = meta.isDirty
+            if (meta.ports !== undefined) newTab.ports = meta.ports.length > 0 ? meta.ports : undefined
+            const newTabs = [...group.tabs]
+            newTabs[idx] = newTab
+            const updatedWs = {
+              ...ws,
+              groups: { ...ws.groups, [gid]: { ...group, tabs: newTabs } },
+            }
+            // Update workspace title/subtitle if this is the focused pane's active tab
+            if (gid === ws.focusedGroupId && group.activeTabId === action.tabId) {
+              updatedWs.title = newTab.title
+              updatedWs.subtitle = getWorkspaceSubtitle(updatedWs)
+            }
+            return {
+              ...state,
+              workspaces: { ...state.workspaces, [wsId]: updatedWs },
+            }
+          }
+        }
+      }
+      return state
+    }
+
+    // --- Notification actions ---
+
+    case "SET_NOTIFICATIONS": {
+      // Merge: keep any notifications already added individually that aren't
+      // in the server's list (handles race where notification broadcast arrives
+      // before notifications_list during connection setup).
+      const listIds = new Set(action.notifications.map((n: Notification) => n.id))
+      const extra = state.notifications.filter((n) => !listIds.has(n.id))
+      return { ...state, notifications: [...action.notifications, ...extra] }
+    }
+
+    case "ADD_NOTIFICATION":
+      return { ...state, notifications: [...state.notifications, action.notification] }
+
+    case "MARK_NOTIFICATION_READ":
+      return {
+        ...state,
+        notifications: state.notifications.map((n) =>
+          n.id === action.notificationId ? { ...n, isRead: true } : n
+        ),
+      }
+
+    case "CLEAR_NOTIFICATIONS":
+      return {
+        ...state,
+        notifications: action.sessionId != null
+          ? state.notifications.filter((n) => n.sessionId !== action.sessionId)
+          : [],
+      }
 
     default:
       return state

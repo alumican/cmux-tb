@@ -1,0 +1,10 @@
+.{
+    .name = .cmuxd,
+    .version = "0.1.0",
+    .fingerprint = 0x2eff295ae021bf76,
+    .minimum_zig_version = "0.15.2",
+    .dependencies = .{
+        .ghostty = .{ .path = "../ghostty" },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src" },
+}

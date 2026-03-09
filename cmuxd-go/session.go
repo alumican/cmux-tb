@@ -7,10 +7,54 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/creack/pty"
 )
+
+// SessionMetadata holds per-session sidebar metadata.
+type SessionMetadata struct {
+	Title       string                  `json:"title"`
+	Description string                  `json:"description,omitempty"`
+	CWD         string                  `json:"cwd,omitempty"`
+	Git         *GitBranchInfo          `json:"git,omitempty"`
+	Ports       []int                   `json:"ports,omitempty"`
+	Status      map[string]*StatusEntry `json:"status,omitempty"`
+	Log         []*LogEntry             `json:"log,omitempty"`
+	Progress    *ProgressInfo           `json:"progress,omitempty"`
+}
+
+// GitBranchInfo holds git branch metadata.
+type GitBranchInfo struct {
+	Branch  string `json:"branch"`
+	IsDirty bool   `json:"isDirty,omitempty"`
+}
+
+// StatusEntry holds a key-value status pill.
+type StatusEntry struct {
+	Key       string `json:"key"`
+	Value     string `json:"value"`
+	Icon      string `json:"icon,omitempty"`
+	Color     string `json:"color,omitempty"`
+	Timestamp int64  `json:"timestamp"`
+}
+
+// LogEntry holds a sidebar log message.
+type LogEntry struct {
+	Message   string `json:"message"`
+	Level     string `json:"level,omitempty"`
+	Source    string `json:"source,omitempty"`
+	Timestamp int64  `json:"timestamp"`
+}
+
+// ProgressInfo holds a progress bar state.
+type ProgressInfo struct {
+	Value float64 `json:"value"`
+	Label string  `json:"label,omitempty"`
+}
+
+const maxLogEntries = 50
 
 // SessionMode controls input access.
 type SessionMode int
@@ -40,6 +84,14 @@ type Session struct {
 	Mode        SessionMode
 	DriverID    *uint32 // nil = no driver
 	ClientSizes map[uint32]ClientSize
+
+	// Metadata (protected by Server.mu)
+	Meta      SessionMetadata
+	oscParser OscParser
+
+	// Coalescing timer for metadata broadcasts (protected by Server.mu)
+	metaTimer    *time.Timer
+	metaPending  bool
 }
 
 // SpawnSession creates a new PTY session.
@@ -77,6 +129,11 @@ func SpawnSession(id uint32, cols, rows uint16) (*Session, error) {
 		Rows:        rows,
 		ring:        NewRingBuffer(defaultRingSize),
 		ClientSizes: make(map[uint32]ClientSize),
+		Meta: SessionMetadata{
+			Title:  "Terminal",
+			CWD:    cmd.Dir,
+			Status: make(map[string]*StatusEntry),
+		},
 	}
 	s.alive.Store(true)
 	return s, nil

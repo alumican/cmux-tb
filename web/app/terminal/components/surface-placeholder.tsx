@@ -5,6 +5,7 @@ import type { DropDirection } from "../lib/reducer"
 interface SurfacePlaceholderProps {
   surfaceId: string
   isFocused: boolean
+  isSplit: boolean
   onFocus: () => void
   dropZone?: DropDirection | null
 }
@@ -12,6 +13,7 @@ interface SurfacePlaceholderProps {
 export function SurfacePlaceholder({
   surfaceId,
   isFocused,
+  isSplit,
   onFocus,
   dropZone,
 }: SurfacePlaceholderProps) {
@@ -44,6 +46,18 @@ export function SurfacePlaceholder({
       >
         {surfaceId}
       </span>
+      {isSplit && !isFocused && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            background: "var(--code-bg)",
+            opacity: 0.3,
+            pointerEvents: "none",
+            zIndex: 1,
+          }}
+        />
+      )}
       {dropZone && <DropZoneOverlay direction={dropZone} />}
     </div>
   )

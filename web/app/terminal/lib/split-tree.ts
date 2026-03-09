@@ -8,6 +8,12 @@ export interface GroupTab {
   id: string
   title: string
   type: SurfaceType
+  description?: string
+  cwd?: string
+  dir?: string
+  branch?: string
+  isDirty?: boolean
+  ports?: number[]
 }
 
 export interface PaneGroup {
@@ -36,9 +42,21 @@ export type TreeNode = LeafNode | SplitNode
 export interface Workspace {
   id: string
   title: string
+  subtitle?: string // derived from focused tab's branch/dir
   root: TreeNode
   groups: Record<string, PaneGroup>
   focusedGroupId: string
+}
+
+/** A notification from cmuxd */
+export interface Notification {
+  id: number
+  sessionId: number
+  title: string
+  subtitle?: string
+  body?: string
+  createdAt: number
+  isRead: boolean
 }
 
 /** Top-level app state: a list of workspaces */
@@ -46,6 +64,7 @@ export interface AppState {
   workspaces: Record<string, Workspace>
   workspaceOrder: string[] // sidebar ordering
   activeWorkspaceId: string
+  notifications: Notification[]
 }
 
 // --- ID generation ---

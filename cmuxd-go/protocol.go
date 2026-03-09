@@ -117,6 +117,82 @@ type ErrorMsg struct {
 	SessionID uint32 `json:"sessionId,omitempty"`
 }
 
+// --- Metadata messages ---
+
+// SessionMetadataMsg is sent server→client with full metadata snapshot.
+type SessionMetadataMsg struct {
+	Type      string          `json:"type"` // "session_metadata"
+	SessionID uint32          `json:"sessionId"`
+	Metadata  SessionMetadata `json:"metadata"`
+}
+
+// UpdateMetadataMsg is sent client→server by shell integrations.
+type UpdateMetadataMsg struct {
+	Type          string         `json:"type"` // "update_metadata"
+	SessionID     uint32         `json:"sessionId"`
+	SetStatus     *StatusEntry   `json:"setStatus,omitempty"`
+	RemoveStatus  string         `json:"removeStatus,omitempty"`
+	ClearStatus   bool           `json:"clearStatus,omitempty"`
+	Log           *LogEntry      `json:"log,omitempty"`
+	ClearLog      bool           `json:"clearLog,omitempty"`
+	Git           *GitBranchInfo `json:"git,omitempty"`
+	ClearGit      bool           `json:"clearGit,omitempty"`
+	Ports         []int          `json:"ports,omitempty"`
+	Progress      *ProgressInfo  `json:"progress,omitempty"`
+	ClearProgress bool           `json:"clearProgress,omitempty"`
+	CWD           string         `json:"cwd,omitempty"`
+	Description   *string        `json:"description,omitempty"`
+}
+
+// --- Notification messages ---
+
+// NotifyMsg is sent client→server to create a notification.
+type NotifyMsg struct {
+	Type      string `json:"type"` // "notify"
+	SessionID uint32 `json:"sessionId"`
+	Title     string `json:"title"`
+	Subtitle  string `json:"subtitle,omitempty"`
+	Body      string `json:"body,omitempty"`
+}
+
+// NotificationMsg is sent server→client when a notification is created or updated.
+type NotificationMsg struct {
+	Type         string        `json:"type"` // "notification"
+	Notification *Notification `json:"notification"`
+}
+
+// MarkNotificationReadMsg is sent client→server to mark a notification as read.
+type MarkNotificationReadMsg struct {
+	Type           string  `json:"type"` // "mark_notification_read"
+	NotificationID uint64  `json:"notificationId,omitempty"`
+	SessionID      *uint32 `json:"sessionId,omitempty"` // mark all for session
+}
+
+// NotificationReadMsg is sent server→client when a notification is marked read.
+type NotificationReadMsg struct {
+	Type           string `json:"type"` // "notification_read"
+	NotificationID uint64 `json:"notificationId"`
+}
+
+// ClearNotificationsMsg is sent client→server to clear notifications.
+type ClearNotificationsMsg struct {
+	Type      string  `json:"type"` // "clear_notifications"
+	SessionID *uint32 `json:"sessionId,omitempty"` // nil = clear all
+}
+
+// NotificationsClearedMsg is sent server→client when notifications are cleared.
+type NotificationsClearedMsg struct {
+	Type      string  `json:"type"` // "notifications_cleared"
+	SessionID *uint32 `json:"sessionId,omitempty"`
+	Count     int     `json:"count"`
+}
+
+// NotificationsListMsg is sent server→client with all notifications.
+type NotificationsListMsg struct {
+	Type          string          `json:"type"` // "notifications_list"
+	Notifications []*Notification `json:"notifications"`
+}
+
 // GenericMsg is used to extract just the type field for dispatch.
 type GenericMsg struct {
 	Type string `json:"type"`

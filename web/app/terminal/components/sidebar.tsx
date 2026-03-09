@@ -1,12 +1,13 @@
 "use client"
 
 import { useState, useCallback, useRef } from "react"
-import type { Workspace } from "../lib/split-tree"
+import type { Workspace, Notification } from "../lib/split-tree"
 
 interface SidebarProps {
   workspaces: Record<string, Workspace>
   workspaceOrder: string[]
   activeWorkspaceId: string
+  notifications: Notification[]
   onSelectWorkspace: (workspaceId: string) => void
   onCloseWorkspace: (workspaceId: string) => void
   onAddWorkspace: () => void
@@ -21,6 +22,7 @@ export function Sidebar({
   workspaces,
   workspaceOrder,
   activeWorkspaceId,
+  notifications,
   onSelectWorkspace,
   onCloseWorkspace,
   onAddWorkspace,
@@ -137,7 +139,15 @@ export function Sidebar({
           return (
             <div
               key={wsId}
+              data-testid={`workspace-${wsId}`}
+              data-active={isActive}
               onClick={() => onSelectWorkspace(wsId)}
+              onAuxClick={(e) => {
+                if (e.button === 1) {
+                  e.preventDefault()
+                  onCloseWorkspace(wsId)
+                }
+              }}
               onMouseEnter={() => setHoveredId(wsId)}
               onMouseLeave={() => setHoveredId(null)}
               style={{
@@ -179,21 +189,38 @@ export function Sidebar({
                 />
               </svg>
 
-              {/* Title */}
-              <span
-                style={{
-                  flex: 1,
-                  fontSize: 12,
-                  fontFamily: "var(--font-geist-sans)",
-                  color: isActive ? "#FFFFFF" : "#E5E5E5",
-                  whiteSpace: "nowrap",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  lineHeight: 1.3,
-                }}
-              >
-                {ws.title}
-              </span>
+              {/* Title + subtitle */}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div
+                  style={{
+                    fontSize: 12,
+                    fontFamily: "var(--font-geist-sans)",
+                    color: isActive ? "#FFFFFF" : "#E5E5E5",
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    lineHeight: 1.3,
+                  }}
+                >
+                  {ws.title}
+                </div>
+                {ws.subtitle && (
+                  <div
+                    style={{
+                      fontSize: 10,
+                      fontFamily: "var(--font-geist-sans)",
+                      color: isActive ? "rgba(255,255,255,0.7)" : "#8E8E93",
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      lineHeight: 1.3,
+                      marginTop: 1,
+                    }}
+                  >
+                    {ws.subtitle}
+                  </div>
+                )}
+              </div>
 
               {/* Close button */}
               {isHovered && workspaceOrder.length > 1 && (
@@ -231,6 +258,105 @@ export function Sidebar({
           )
         })}
       </div>
+
+      {/* Notifications */}
+      {notifications.length > 0 && (
+        <div
+          style={{
+            borderTop: "1px solid #2C2C2E",
+            flexShrink: 0,
+          }}
+        >
+          <div
+            style={{
+              padding: "8px 14px 4px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+            }}
+          >
+            <span
+              style={{
+                fontSize: 11,
+                fontWeight: 600,
+                fontFamily: "var(--font-geist-sans)",
+                color: "#8E8E93",
+                textTransform: "uppercase",
+                letterSpacing: "0.5px",
+              }}
+            >
+              Notifications
+            </span>
+            {notifications.filter((n) => !n.isRead).length > 0 && (
+              <span
+                style={{
+                  fontSize: 9,
+                  fontFamily: "var(--font-geist-sans)",
+                  fontWeight: 600,
+                  color: "#FFFFFF",
+                  background: "#FF3B30",
+                  borderRadius: 8,
+                  padding: "1px 5px",
+                  minWidth: 14,
+                  textAlign: "center",
+                  lineHeight: "14px",
+                }}
+              >
+                {notifications.filter((n) => !n.isRead).length}
+              </span>
+            )}
+          </div>
+          <div
+            style={{
+              maxHeight: 150,
+              overflowY: "auto",
+              padding: "0 6px 6px",
+            }}
+          >
+            {notifications.slice(-10).reverse().map((n) => (
+              <div
+                key={n.id}
+                style={{
+                  padding: "5px 10px",
+                  marginBottom: 1,
+                  borderRadius: 4,
+                  opacity: n.isRead ? 0.5 : 1,
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 11,
+                    fontFamily: "var(--font-geist-sans)",
+                    color: "#E5E5E5",
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    lineHeight: 1.3,
+                  }}
+                >
+                  {n.title}
+                </div>
+                {(n.subtitle || n.body) && (
+                  <div
+                    style={{
+                      fontSize: 10,
+                      fontFamily: "var(--font-geist-sans)",
+                      color: "#8E8E93",
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      lineHeight: 1.3,
+                      marginTop: 1,
+                    }}
+                  >
+                    {n.subtitle || n.body}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Resize handle */}
       <div

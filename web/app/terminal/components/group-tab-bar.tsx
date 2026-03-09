@@ -48,6 +48,7 @@ export function GroupTabBar({
           <div
             key={tab.id}
             data-testid={`tab-${tab.id}`}
+            data-tab-id={tab.id}
             data-active={isActive}
             style={{
               position: "relative",
@@ -74,6 +75,12 @@ export function GroupTabBar({
               onMouseDown={(e) => {
                 if (e.button === 0 && onTabDragStart) {
                   onTabDragStart(group.id, tab.id, tab.title, e)
+                }
+              }}
+              onAuxClick={(e) => {
+                if (e.button === 1) {
+                  e.preventDefault()
+                  onCloseTab(tab.id)
                 }
               }}
               style={{

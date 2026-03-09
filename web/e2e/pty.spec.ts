@@ -1,4 +1,7 @@
 import { test, expect, type Page, type WebSocket as PWSocket } from "@playwright/test"
+import { resolve } from "path"
+
+const MOUSE_FIXTURE = resolve("e2e/fixtures/mouse-test.py")
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -169,10 +172,10 @@ test.describe("PTY server integration", () => {
     expect(ws.url()).toContain("/ws?cols=")
   })
 
-  test("terminal surface renders canvas element", async ({ page }) => {
+  test("terminal surface renders terminal element", async ({ page }) => {
     await page.goto("/terminal")
     await expect(surfaces(page).first()).toBeVisible()
-    await expect(surfaces(page).first().locator("canvas")).toBeVisible()
+    await expect(surfaces(page).first().locator(".xterm")).toBeVisible()
   })
 
   test("PTY server sends shell output through WebSocket", async ({ page }) => {
@@ -236,7 +239,7 @@ test.describe("PTY server integration", () => {
 
     await closeBtn(page).click()
     await expect(groups(page)).toHaveCount(1)
-    await expect(surfaces(page).first().locator("canvas")).toBeVisible()
+    await expect(surfaces(page).first().locator(".xterm")).toBeVisible()
   })
 })
 
@@ -425,11 +428,11 @@ test.describe("Terminal mouse input", () => {
     const tabId = await getActiveTabId(page)
     await focusTerminal(page)
     // Launch the mouse test fixture
-    await typeAndWaitForOutput(page, tabId, "python3 e2e/fixtures/mouse-test.py", "MOUSE_READY")
+    await typeAndWaitForOutput(page, tabId, `python3 ${MOUSE_FIXTURE}`, "MOUSE_READY")
 
-    // Click on the terminal canvas
-    const canvas = focusedSurface(page).locator("canvas")
-    await canvas.click({ position: { x: 50, y: 50 } })
+    // Click on the terminal screen (xterm.js handles mouse events on .xterm-screen)
+    const screen = focusedSurface(page).locator(".xterm-screen")
+    await screen.click({ position: { x: 50, y: 50 } })
 
     // Verify the TUI received the mouse press event
     await expect.poll(() => getScreenText(page, tabId), { timeout: 5000 })
@@ -445,20 +448,29 @@ test.describe("Terminal mouse input", () => {
 
     const tabId = await getActiveTabId(page)
     await focusTerminal(page)
-    await typeAndWaitForOutput(page, tabId, "python3 e2e/fixtures/mouse-test.py", "MOUSE_READY")
+    await typeAndWaitForOutput(page, tabId, `python3 ${MOUSE_FIXTURE}`, "MOUSE_READY")
 
-    // Get cell dimensions from the renderer
+    // Get cell dimensions from xterm.js render service
     const cellDims = await page.evaluate((id: string) => {
       const reg = (window as any).__surfaceRegistry
       const entry = reg.get(id)
       const term = (entry?.adapter as any)?.terminal ?? entry?.terminal
-      if (!term?.renderer) return { cw: 8, ch: 16 }
-      return { cw: term.renderer.charWidth, ch: term.renderer.charHeight }
+      // Try render service dimensions (works for all renderers in xterm.js v6)
+      const dims = term?._core?._renderService?.dimensions?.css?.cell
+      if (dims) return { cw: dims.width, ch: dims.height }
+      // Fallback: measure from DOM
+      const row = term?.element?.querySelector(".xterm-rows > div")
+      if (row) {
+        const rect = row.getBoundingClientRect()
+        const cols = term.cols || 80
+        return { cw: rect.width / cols, ch: rect.height }
+      }
+      return { cw: 8, ch: 16 }
     }, tabId)
 
     // Click at cell (5, 3) — 0-indexed pixel target, SGR is 1-indexed so expect col=6, row=4
-    const canvas = focusedSurface(page).locator("canvas")
-    await canvas.click({
+    const screen = focusedSurface(page).locator(".xterm-screen")
+    await screen.click({
       position: {
         x: cellDims.cw * 5 + cellDims.cw / 2,
         y: cellDims.ch * 3 + cellDims.ch / 2,
@@ -478,10 +490,10 @@ test.describe("Terminal mouse input", () => {
 
     const tabId = await getActiveTabId(page)
     await focusTerminal(page)
-    await typeAndWaitForOutput(page, tabId, "python3 e2e/fixtures/mouse-test.py", "MOUSE_READY")
+    await typeAndWaitForOutput(page, tabId, `python3 ${MOUSE_FIXTURE}`, "MOUSE_READY")
 
-    const canvas = focusedSurface(page).locator("canvas")
-    await canvas.click({ position: { x: 50, y: 50 }, button: "right" })
+    const screen = focusedSurface(page).locator(".xterm-screen")
+    await screen.click({ position: { x: 50, y: 50 }, button: "right" })
 
     await expect.poll(() => getScreenText(page, tabId), { timeout: 5000 })
       .toMatch(/MOUSE_PRESS_btn2_col\d+_row\d+/)
@@ -501,16 +513,10 @@ test.describe("Multiplexed cmuxd mode", () => {
   })
 
   test("typing a command shows output in mux mode", async ({ page }) => {
-    const connections = trackPtyWebSockets(page)
     await page.goto("/terminal?mode=mux")
     await expect(surfaces(page).first()).toBeVisible()
-    await waitForPtyConnection(connections, 1)
 
-    // Wait for PTY output (shell prompt)
-    const ws = connections[0]
-    await waitForPtyReady(ws)
-
-    const tabId = await getActiveTabId(page)
+    const { tabId } = await waitForSession(page)
     await focusTerminal(page)
     await typeAndWaitForOutput(page, tabId, "echo MUX_HELLO_42", "MUX_HELLO_42")
   })
@@ -519,12 +525,9 @@ test.describe("Multiplexed cmuxd mode", () => {
     const connections = trackPtyWebSockets(page)
     await page.goto("/terminal?mode=mux")
     await expect(surfaces(page).first()).toBeVisible()
-    await waitForPtyConnection(connections, 1)
-    const ws = connections[0]
-    await waitForPtyReady(ws)
 
-    // Type in the first pane
-    const tab1Id = await getActiveTabId(page)
+    // Wait for first session to be fully ready (input handler wired)
+    const { tabId: tab1Id } = await waitForSession(page)
     await focusTerminal(page)
     await typeAndWaitForOutput(page, tab1Id, "echo MUX_LEFT_99", "MUX_LEFT_99")
 
@@ -536,8 +539,8 @@ test.describe("Multiplexed cmuxd mode", () => {
     await page.waitForTimeout(500)
     expect(connections.length).toBe(1) // Still just the one mux connection
 
-    // Type in the second pane
-    const tab2Id = await getActiveTabId(page)
+    // Wait for second pane's session to be ready before typing
+    const { tabId: tab2Id } = await waitForSession(page)
     expect(tab2Id).not.toBe(tab1Id)
     await focusTerminal(page)
     await typeAndWaitForOutput(page, tab2Id, "echo MUX_RIGHT_77", "MUX_RIGHT_77")
@@ -555,8 +558,7 @@ test.describe("Multiplexed cmuxd mode", () => {
     const connections = trackPtyWebSockets(page)
     await page.goto("/terminal?mode=mux")
     await expect(surfaces(page).first()).toBeVisible()
-    await waitForPtyConnection(connections, 1)
-    await waitForPtyReady(connections[0])
+    await waitForSession(page)
 
     // Create a new tab
     await addTabBtn(page).click()
@@ -566,8 +568,8 @@ test.describe("Multiplexed cmuxd mode", () => {
     await page.waitForTimeout(500)
     expect(connections.length).toBe(1)
 
-    // Type in the new tab
-    const tabId = await getActiveTabId(page)
+    // Wait for new tab's session to be ready before typing
+    const { tabId } = await waitForSession(page)
     await focusTerminal(page)
     await typeAndWaitForOutput(page, tabId, "echo MUX_TAB2_55", "MUX_TAB2_55")
   })
@@ -576,11 +578,9 @@ test.describe("Multiplexed cmuxd mode", () => {
     const connections = trackPtyWebSockets(page)
     await page.goto("/terminal?mode=mux")
     await expect(surfaces(page).first()).toBeVisible()
-    await waitForPtyConnection(connections, 1)
-    await waitForPtyReady(connections[0])
 
-    // Type in the first pane so we know it works
-    const tab1Id = await getActiveTabId(page)
+    // Wait for session to be fully ready (input handler wired)
+    const { tabId: tab1Id } = await waitForSession(page)
     await focusTerminal(page)
     await typeAndWaitForOutput(page, tab1Id, "echo MUX_BEFORE_SPLIT", "MUX_BEFORE_SPLIT")
 
@@ -608,6 +608,7 @@ test.describe("Multiplexed cmuxd mode", () => {
   test("workspace_snapshot includes terminalConfig from ghostty config", async ({ page }) => {
     await page.goto("/terminal?mode=mux")
     await expect(surfaces(page).first()).toBeVisible()
+    await waitForMuxReady(page)
 
     const snapshot = await page.evaluate(() => {
       const conn = (window as any).__surfaceRegistry.getMuxConnection()
@@ -710,19 +711,10 @@ test.describe("Multiplayer", () => {
     })
   }
 
-  /** Get session ID for the active tab in the focused group. */
-  async function getMuxSessionId(page: Page, tabId: string): Promise<number> {
-    return page.evaluate((id: string) => {
-      return (window as any).__surfaceRegistry.getMuxSessionId(id)
-    }, tabId)
-  }
-
   test("second mux client triggers client_joined event", async ({ page }) => {
-    const connections = trackPtyWebSockets(page)
     await page.goto("/terminal?mode=mux")
     await expect(surfaces(page).first()).toBeVisible()
-    await waitForPtyConnection(connections, 1)
-    await waitForPtyReady(connections[0])
+    await waitForMuxReady(page)
 
     // Create second client
     await createRawClient(page)
@@ -738,11 +730,9 @@ test.describe("Multiplayer", () => {
   })
 
   test("client_left fires when second client disconnects", async ({ page }) => {
-    const connections = trackPtyWebSockets(page)
     await page.goto("/terminal?mode=mux")
     await expect(surfaces(page).first()).toBeVisible()
-    await waitForPtyConnection(connections, 1)
-    await waitForPtyReady(connections[0])
+    await waitForMuxReady(page)
 
     await createRawClient(page)
     // Wait for client_joined to arrive first
@@ -765,20 +755,14 @@ test.describe("Multiplayer", () => {
   })
 
   test("second client attaches to session and receives live output", async ({ page }) => {
-    const connections = trackPtyWebSockets(page)
     await page.goto("/terminal?mode=mux")
     await expect(surfaces(page).first()).toBeVisible()
-    const ws = await waitForPtyConnection(connections, 1)
-    await waitForPtyReady(ws)
 
-    const tabId = await getActiveTabId(page)
+    const { tabId, sessionId } = await waitForSession(page)
     await focusTerminal(page)
 
     // Type something in session from client 1
     await typeAndWaitForOutput(page, tabId, "echo SHARED_MARKER_42", "SHARED_MARKER_42")
-
-    // Get session ID
-    const sessionId = await getMuxSessionId(page, tabId)
     expect(sessionId).toBeGreaterThan(0)
 
     // Create second client and attach to the same session
@@ -802,13 +786,10 @@ test.describe("Multiplayer", () => {
   })
 
   test("new client receives workspace layout and scrollback on connect", async ({ page }) => {
-    const connections = trackPtyWebSockets(page)
     await page.goto("/terminal?mode=mux")
     await expect(surfaces(page).first()).toBeVisible()
-    const ws = await waitForPtyConnection(connections, 1)
-    await waitForPtyReady(ws)
 
-    const tabId = await getActiveTabId(page)
+    const { tabId, sessionId: sessionId1 } = await waitForSession(page)
     await focusTerminal(page)
 
     // Type unique markers in the first pane
@@ -817,17 +798,12 @@ test.describe("Multiplayer", () => {
     // Split to create a second pane with its own session (shares same WS in mux mode)
     await splitRight(page).click()
     await expect(groups(page)).toHaveCount(2)
-    // Wait for the second surface to be ready (mux mode reuses the same WS)
     await expect(surfaces(page)).toHaveCount(2)
-    await page.waitForTimeout(1000) // let shell start in second pane
 
-    const tabId2 = await getActiveTabId(page)
+    // Wait for second pane's session to be ready
+    const { tabId: tabId2, sessionId: sessionId2 } = await waitForSession(page)
     await focusTerminal(page)
     await typeAndWaitForOutput(page, tabId2, "echo PANE2_SCROLLBACK", "PANE2_SCROLLBACK")
-
-    // Get both session IDs
-    const sessionId1 = await getMuxSessionId(page, tabId)
-    const sessionId2 = await getMuxSessionId(page, tabId2)
     expect(sessionId1).toBeGreaterThan(0)
     expect(sessionId2).toBeGreaterThan(0)
     expect(sessionId1).not.toEqual(sessionId2)
@@ -860,17 +836,12 @@ test.describe("Multiplayer", () => {
   })
 
   test("single_driver mode blocks non-driver input", async ({ page }) => {
-    const connections = trackPtyWebSockets(page)
     await page.goto("/terminal?mode=mux")
     await expect(surfaces(page).first()).toBeVisible()
-    const ws = await waitForPtyConnection(connections, 1)
-    await waitForPtyReady(ws)
 
-    const tabId = await getActiveTabId(page)
+    const { tabId, sessionId } = await waitForSession(page)
     await focusTerminal(page)
     await typeAndWaitForOutput(page, tabId, "echo BEFORE_DRIVER_MODE", "BEFORE_DRIVER_MODE")
-
-    const sessionId = await getMuxSessionId(page, tabId)
 
     // Create second client and attach
     await createRawClient(page)
@@ -903,17 +874,12 @@ test.describe("Multiplayer", () => {
   })
 
   test("driver handoff via release and request", async ({ page }) => {
-    const connections = trackPtyWebSockets(page)
     await page.goto("/terminal?mode=mux")
     await expect(surfaces(page).first()).toBeVisible()
-    const ws = await waitForPtyConnection(connections, 1)
-    await waitForPtyReady(ws)
 
-    const tabId = await getActiveTabId(page)
+    const { tabId, sessionId } = await waitForSession(page)
     await focusTerminal(page)
     await typeAndWaitForOutput(page, tabId, "echo HANDOFF_START", "HANDOFF_START")
-
-    const sessionId = await getMuxSessionId(page, tabId)
 
     // Create second client and attach
     await createRawClient(page)
@@ -994,5 +960,370 @@ test.describe("Cmd+K clear screen", () => {
     // We verify by checking getScreenText — after clear+redraw, the old content is gone.
     await expect.poll(() => getScreenText(page, tabId), { timeout: 3000 })
       .not.toContain("BEFORE_CLEAR_MARKER_99")
+  })
+})
+
+// ─── Mux helper: wait for session creation ──────────────────────────
+
+/** Wait for the mux session to be created for the active tab. Returns tabId and sessionId. */
+async function waitForSession(page: Page): Promise<{ tabId: string; sessionId: number }> {
+  const tabId = await getActiveTabId(page)
+  await expect.poll(async () => {
+    return page.evaluate((id) => {
+      return (window as any).__surfaceRegistry?.getMuxSessionId(id) ?? 0
+    }, tabId)
+  }, { timeout: 15000 }).toBeGreaterThan(0)
+  const sessionId = await page.evaluate((id: string) => {
+    return (window as any).__surfaceRegistry.getMuxSessionId(id)!
+  }, tabId)
+  return { tabId, sessionId }
+}
+
+/** Wait for the mux connection to be ready (has received workspace_snapshot). */
+async function waitForMuxReady(page: Page) {
+  await expect.poll(async () => {
+    return page.evaluate(() => {
+      const conn = (window as any).__surfaceRegistry?.getMuxConnection()
+      return conn?.ready ?? false
+    })
+  }, { timeout: 10000 }).toBe(true)
+}
+
+/** Send a JSON message via the mux connection's internal WS. */
+async function sendMuxMessage(page: Page, msg: Record<string, unknown>) {
+  const result = await page.evaluate((msgStr) => {
+    const conn = (window as any).__surfaceRegistry?.getMuxConnection()
+    if (!conn) return "no-conn"
+    const ws = conn.ws
+    if (!ws) return "no-ws"
+    if (ws.readyState !== WebSocket.OPEN) return `ws-state-${ws.readyState}`
+    ws.send(msgStr)
+    return "sent"
+  }, JSON.stringify(msg))
+  if (result !== "sent") throw new Error(`sendMuxMessage failed: ${result}`)
+}
+
+/** Send a notify message. */
+async function sendNotify(page: Page, sessionId: number, title: string, subtitle?: string, body?: string) {
+  const msg: Record<string, unknown> = { type: "notify", sessionId, title }
+  if (subtitle) msg.subtitle = subtitle
+  if (body) msg.body = body
+  await sendMuxMessage(page, msg)
+}
+
+/** Send update_metadata. */
+async function sendUpdateMetadata(page: Page, sessionId: number, fields: Record<string, unknown>) {
+  await sendMuxMessage(page, { type: "update_metadata", sessionId, ...fields })
+}
+
+// ─── Notifications Tests ─────────────────────────────────────────────
+
+test.describe("Notifications", () => {
+  test("external notification shows in sidebar", async ({ page }) => {
+    await page.goto("/terminal?mode=mux")
+    await expect(surfaces(page).first()).toBeVisible()
+    await waitForSession(page)
+
+    // Send notification from a SEPARATE raw WS client (simulates external source)
+    await page.evaluate(async () => {
+      return new Promise<void>((resolve) => {
+        const ws = new WebSocket("ws://localhost:3778/ws?mode=mux&cols=80&rows=24")
+        ws.onmessage = (e: MessageEvent) => {
+          if (typeof e.data === "string") {
+            const msg = JSON.parse(e.data)
+            if (msg.type === "workspace_snapshot") {
+              ws.send(JSON.stringify({
+                type: "notify", sessionId: msg.initialSessionId,
+                title: "ExtNotif42", subtitle: "from-external"
+              }))
+              setTimeout(() => { ws.close(); resolve() }, 500)
+            }
+          }
+        }
+      })
+    })
+
+    // Notification should appear in the main page's sidebar
+    await expect(page.locator("text=ExtNotif42")).toBeVisible({ timeout: 5000 })
+  })
+
+  test("sending a notification shows it in the sidebar", async ({ page }) => {
+    trackPtyWebSockets(page)
+    await page.goto("/terminal?mode=mux")
+    await expect(surfaces(page).first()).toBeVisible()
+    const { sessionId } = await waitForSession(page)
+
+    // Send a notification
+    await sendNotify(page, sessionId, "Build Complete", "project-x", "All tests passed")
+
+    // Wait for the notification to appear in the sidebar
+    await expect(page.locator("text=Build Complete")).toBeVisible({ timeout: 5000 })
+  })
+
+  test("notification badge shows unread count", async ({ page }) => {
+    trackPtyWebSockets(page)
+    await page.goto("/terminal?mode=mux")
+    await expect(surfaces(page).first()).toBeVisible()
+    const { sessionId } = await waitForSession(page)
+
+    // Send two notifications
+    await sendNotify(page, sessionId, "Notif One")
+    await page.waitForTimeout(100)
+    await sendNotify(page, sessionId, "Notif Two")
+
+    // Wait for both notifications to appear
+    await expect(page.locator("text=Notif One")).toBeVisible({ timeout: 5000 })
+    await expect(page.locator("text=Notif Two")).toBeVisible({ timeout: 3000 })
+
+    // Check notifications section is visible
+    await expect(page.locator("text=Notifications")).toBeVisible()
+  })
+
+  test("notification message arrives in mux connection messages", async ({ page }) => {
+    trackPtyWebSockets(page)
+    await page.goto("/terminal?mode=mux")
+    await expect(surfaces(page).first()).toBeVisible()
+    const { sessionId } = await waitForSession(page)
+
+    // Send a notification
+    await sendNotify(page, sessionId, "WS Test Notif", "sub1", "body1")
+
+    // Wait for notification message to arrive in the connection's message log
+    await expect.poll(async () => {
+      return page.evaluate(() => {
+        const conn = (window as any).__surfaceRegistry.getMuxConnection()
+        return conn?._messages?.some((m: any) =>
+          m.type === "notification" && m.notification?.title === "WS Test Notif"
+        ) ?? false
+      })
+    }, { timeout: 5000 }).toBe(true)
+
+    // Verify the notification object has the right fields
+    const notif = await page.evaluate(() => {
+      const conn = (window as any).__surfaceRegistry.getMuxConnection()
+      const msg = conn._messages.find((m: any) =>
+        m.type === "notification" && m.notification?.title === "WS Test Notif"
+      )
+      return msg?.notification
+    })
+    expect(notif.title).toBe("WS Test Notif")
+    expect(notif.subtitle).toBe("sub1")
+    expect(notif.body).toBe("body1")
+    expect(notif.id).toBeGreaterThan(0)
+    expect(notif.isRead).toBe(false)
+  })
+
+  test("notifications_list arrives on connect", async ({ page }) => {
+    trackPtyWebSockets(page)
+    await page.goto("/terminal?mode=mux")
+    await expect(surfaces(page).first()).toBeVisible()
+    await waitForMuxReady(page)
+
+    // notifications_list should arrive as part of initial connection
+    await expect.poll(async () => {
+      return page.evaluate(() => {
+        const conn = (window as any).__surfaceRegistry.getMuxConnection()
+        return conn?._messages?.some((m: any) => m.type === "notifications_list") ?? false
+      })
+    }, { timeout: 5000 }).toBe(true)
+  })
+
+  test("mark_notification_read triggers notification_read response", async ({ page }) => {
+    trackPtyWebSockets(page)
+    await page.goto("/terminal?mode=mux")
+    await expect(surfaces(page).first()).toBeVisible()
+    const { sessionId } = await waitForSession(page)
+
+    // Send a notification
+    await sendNotify(page, sessionId, "Read Me")
+
+    // Wait for notification to arrive and get its ID
+    await expect.poll(async () => {
+      return page.evaluate(() => {
+        const conn = (window as any).__surfaceRegistry.getMuxConnection()
+        const msg = conn?._messages?.find((m: any) =>
+          m.type === "notification" && m.notification?.title === "Read Me"
+        )
+        return msg?.notification?.id ?? 0
+      })
+    }, { timeout: 5000 }).toBeGreaterThan(0)
+
+    const notifId = await page.evaluate(() => {
+      const conn = (window as any).__surfaceRegistry.getMuxConnection()
+      const msg = conn._messages.find((m: any) =>
+        m.type === "notification" && m.notification?.title === "Read Me"
+      )
+      return msg.notification.id
+    })
+
+    // Mark it as read
+    await page.evaluate(({ nid }) => {
+      const conn = (window as any).__surfaceRegistry.getMuxConnection()
+      conn.markNotificationRead(nid)
+    }, { nid: notifId })
+
+    // Wait for notification_read response
+    await expect.poll(async () => {
+      return page.evaluate(({ nid }) => {
+        const conn = (window as any).__surfaceRegistry.getMuxConnection()
+        return conn?._messages?.some((m: any) =>
+          m.type === "notification_read" && m.notificationId === nid
+        ) ?? false
+      }, { nid: notifId })
+    }, { timeout: 5000 }).toBe(true)
+  })
+
+  test("clear_notifications triggers notifications_cleared response", async ({ page }) => {
+    trackPtyWebSockets(page)
+    await page.goto("/terminal?mode=mux")
+    await expect(surfaces(page).first()).toBeVisible()
+    const { sessionId } = await waitForSession(page)
+
+    // Send a notification
+    await sendNotify(page, sessionId, "Clear Me")
+    await expect.poll(async () => {
+      return page.evaluate(() => {
+        const conn = (window as any).__surfaceRegistry.getMuxConnection()
+        return conn?._messages?.some((m: any) =>
+          m.type === "notification" && m.notification?.title === "Clear Me"
+        ) ?? false
+      })
+    }, { timeout: 5000 }).toBe(true)
+
+    // Clear all notifications
+    await page.evaluate(() => {
+      const conn = (window as any).__surfaceRegistry.getMuxConnection()
+      conn.clearNotifications()
+    })
+
+    // Wait for notifications_cleared response
+    await expect.poll(async () => {
+      return page.evaluate(() => {
+        const conn = (window as any).__surfaceRegistry.getMuxConnection()
+        return conn?._messages?.some((m: any) => m.type === "notifications_cleared") ?? false
+      })
+    }, { timeout: 5000 }).toBe(true)
+  })
+})
+
+// ─── Session Metadata Tests ──────────────────────────────────────────
+
+test.describe("Session Metadata", () => {
+  test("session_metadata arrives on connect with initial title", async ({ page }) => {
+    trackPtyWebSockets(page)
+    await page.goto("/terminal?mode=mux")
+    await expect(surfaces(page).first()).toBeVisible()
+    await waitForMuxReady(page)
+
+    // session_metadata should arrive after workspace_snapshot
+    await expect.poll(async () => {
+      return page.evaluate(() => {
+        const conn = (window as any).__surfaceRegistry.getMuxConnection()
+        return conn?._messages?.some((m: any) => m.type === "session_metadata") ?? false
+      })
+    }, { timeout: 5000 }).toBe(true)
+
+    // It should have a title
+    const meta = await page.evaluate(() => {
+      const conn = (window as any).__surfaceRegistry.getMuxConnection()
+      const msg = conn._messages.find((m: any) => m.type === "session_metadata")
+      return msg?.metadata
+    })
+    expect(meta.title).toBeTruthy()
+  })
+
+  test("update_metadata with description updates sidebar subtitle", async ({ page }) => {
+    trackPtyWebSockets(page)
+    await page.goto("/terminal?mode=mux")
+    await expect(surfaces(page).first()).toBeVisible()
+    const { sessionId } = await waitForSession(page)
+
+    // Send description via update_metadata
+    await sendUpdateMetadata(page, sessionId, { description: "Running tests..." })
+
+    // Wait for session_metadata with description to arrive
+    await expect.poll(async () => {
+      return page.evaluate(() => {
+        const conn = (window as any).__surfaceRegistry.getMuxConnection()
+        return conn?._messages?.filter((m: any) => m.type === "session_metadata")
+          .some((m: any) => m.metadata?.description === "Running tests...") ?? false
+      })
+    }, { timeout: 5000 }).toBe(true)
+
+    // The sidebar should show the description as subtitle
+    const activeWorkspace = page.locator("[data-testid^='workspace-'][data-active='true']")
+    await expect(activeWorkspace).toContainText("Running tests...", { timeout: 3000 })
+  })
+
+  test("update_metadata with git branch shows in sidebar", async ({ page }) => {
+    trackPtyWebSockets(page)
+    await page.goto("/terminal?mode=mux")
+    await expect(surfaces(page).first()).toBeVisible()
+    const { sessionId } = await waitForSession(page)
+
+    // Send git metadata
+    await sendUpdateMetadata(page, sessionId, { git: { branch: "feature/test-branch", isDirty: true } })
+
+    // Wait for session_metadata with git info
+    await expect.poll(async () => {
+      return page.evaluate(() => {
+        const conn = (window as any).__surfaceRegistry.getMuxConnection()
+        return conn?._messages?.filter((m: any) => m.type === "session_metadata")
+          .some((m: any) => m.metadata?.git?.branch === "feature/test-branch") ?? false
+      })
+    }, { timeout: 5000 }).toBe(true)
+
+    // The sidebar should show the branch with dirty indicator
+    const activeWorkspace = page.locator("[data-testid^='workspace-'][data-active='true']")
+    await expect(activeWorkspace).toContainText("feature/test-branch*", { timeout: 3000 })
+  })
+
+  test("update_metadata with cwd shows dir in sidebar", async ({ page }) => {
+    trackPtyWebSockets(page)
+    await page.goto("/terminal?mode=mux")
+    await expect(surfaces(page).first()).toBeVisible()
+    const { sessionId } = await waitForSession(page)
+
+    // Send cwd metadata
+    await sendUpdateMetadata(page, sessionId, { cwd: "/Users/test/myproject" })
+
+    // Wait for session_metadata with cwd
+    await expect.poll(async () => {
+      return page.evaluate(() => {
+        const conn = (window as any).__surfaceRegistry.getMuxConnection()
+        return conn?._messages?.filter((m: any) => m.type === "session_metadata")
+          .some((m: any) => m.metadata?.cwd === "/Users/test/myproject") ?? false
+      })
+    }, { timeout: 5000 }).toBe(true)
+
+    // The sidebar should show the directory basename
+    const activeWorkspace = page.locator("[data-testid^='workspace-'][data-active='true']")
+    await expect(activeWorkspace).toContainText("myproject", { timeout: 3000 })
+  })
+
+  test("description takes priority over branch in sidebar subtitle", async ({ page }) => {
+    trackPtyWebSockets(page)
+    await page.goto("/terminal?mode=mux")
+    await expect(surfaces(page).first()).toBeVisible()
+    const { sessionId } = await waitForSession(page)
+
+    // Set both git branch and description
+    await sendUpdateMetadata(page, sessionId, {
+      git: { branch: "main", isDirty: false },
+      description: "npm install",
+    })
+
+    // Wait for metadata to arrive
+    await expect.poll(async () => {
+      return page.evaluate(() => {
+        const conn = (window as any).__surfaceRegistry.getMuxConnection()
+        return conn?._messages?.filter((m: any) => m.type === "session_metadata")
+          .some((m: any) => m.metadata?.description === "npm install") ?? false
+      })
+    }, { timeout: 5000 }).toBe(true)
+
+    // Sidebar should show description, not branch
+    const activeWorkspace = page.locator("[data-testid^='workspace-'][data-active='true']")
+    await expect(activeWorkspace).toContainText("npm install", { timeout: 3000 })
   })
 })

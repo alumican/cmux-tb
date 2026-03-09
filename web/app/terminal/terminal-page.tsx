@@ -134,8 +134,9 @@ export function TerminalPage() {
       const rect = bar.getBoundingClientRect()
       if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
         const groupId = bar.getAttribute("data-group-id")!
-        // Find insertion index based on x position
-        const tabs = bar.querySelectorAll("[data-testid^='tab-']")
+        // Find insertion index based on x position using only real tab containers.
+        // (Avoid matching nested close buttons like `tab-close-*`.)
+        const tabs = bar.querySelectorAll("[data-tab-id]")
         let idx = tabs.length
         for (let i = 0; i < tabs.length; i++) {
           const tabRect = tabs[i].getBoundingClientRect()
@@ -230,10 +231,31 @@ export function TerminalPage() {
     }
   }, [dragInfo, dropTarget, detectTarget])
 
-  // Wire up OSC title changes from terminals
+  // Wire up OSC title changes, session metadata, and notifications from terminals
   useEffect(() => {
     surfaceRegistry.setTitleChangeHandler((tabId, title) => {
       dispatch({ type: "UPDATE_TAB_TITLE", tabId, title })
+    })
+    surfaceRegistry.setMetadataChangeHandler((tabId, metadata) => {
+      dispatch({ type: "UPDATE_TAB_METADATA", tabId, metadata })
+    })
+    surfaceRegistry.setNotificationHandler((type, data) => {
+      switch (type) {
+        case "list":
+          dispatch({ type: "SET_NOTIFICATIONS", notifications: data as any[] })
+          break
+        case "add":
+          dispatch({ type: "ADD_NOTIFICATION", notification: data as any })
+          break
+        case "read":
+          dispatch({ type: "MARK_NOTIFICATION_READ", notificationId: data as number })
+          break
+        case "cleared": {
+          const sessionId = data as number | null
+          dispatch({ type: "CLEAR_NOTIFICATIONS", sessionId: sessionId ?? undefined })
+          break
+        }
+      }
     })
   }, [])
 
@@ -256,6 +278,27 @@ export function TerminalPage() {
           handleSplitDown()
         } else {
           handleSplitRight()
+        }
+        return
+      }
+      if (e.altKey && !meta && !ctrl && !shift && e.code === "KeyT") {
+        e.preventDefault()
+        e.stopPropagation()
+        dispatch({ type: "ADD_TAB", groupId: ws.focusedGroupId })
+        return
+      }
+      if (e.altKey && !meta && !ctrl && !shift && e.code === "KeyN") {
+        e.preventDefault()
+        e.stopPropagation()
+        dispatch({ type: "ADD_WORKSPACE" })
+        return
+      }
+      if (e.altKey && !meta && !ctrl && !shift && e.code === "KeyW") {
+        e.preventDefault()
+        e.stopPropagation()
+        const group = ws.groups[ws.focusedGroupId]
+        if (group && group.activeTabId) {
+          dispatch({ type: "CLOSE_TAB", groupId: ws.focusedGroupId, tabId: group.activeTabId })
         }
         return
       }
@@ -300,6 +343,35 @@ export function TerminalPage() {
           return
         }
       }
+      // Alt+1-9: switch workspace by index
+      if (e.altKey && !meta && !ctrl && !shift) {
+        const digitMatch = e.code.match(/^Digit([1-9])$/)
+        if (digitMatch) {
+          const idx = parseInt(digitMatch[1]) - 1
+          if (idx < state.workspaceOrder.length) {
+            e.preventDefault()
+            e.stopPropagation()
+            dispatch({ type: "SELECT_WORKSPACE", workspaceId: state.workspaceOrder[idx] })
+          }
+          return
+        }
+      }
+      // Ctrl+1-9: switch tab by index in focused group
+      if (ctrl && !meta && !e.altKey && !shift) {
+        const digitMatch = e.code.match(/^Digit([1-9])$/)
+        if (digitMatch) {
+          const group = ws.groups[ws.focusedGroupId]
+          if (group) {
+            const idx = parseInt(digitMatch[1]) - 1
+            if (idx < group.tabs.length) {
+              e.preventDefault()
+              e.stopPropagation()
+              dispatch({ type: "SELECT_TAB", groupId: ws.focusedGroupId, tabId: group.tabs[idx].id })
+            }
+          }
+          return
+        }
+      }
       if (ctrl && !shift && e.key === "d") {
         e.preventDefault()
         e.stopPropagation()
@@ -320,7 +392,7 @@ export function TerminalPage() {
 
     window.addEventListener("keydown", handleKeyDown, true)
     return () => window.removeEventListener("keydown", handleKeyDown, true)
-  }, [handleSplitRight, handleSplitDown, handleClosePane, handleClear])
+  }, [handleSplitRight, handleSplitDown, handleClosePane, handleClear, ws.focusedGroupId, ws.groups, state.workspaceOrder])
 
   // Compute drag-related props for SplitTreeView
   const tabBarDropGroupId = dropTarget?.type === "tab-bar" ? dropTarget.groupId : null
@@ -344,6 +416,7 @@ export function TerminalPage() {
           workspaces={state.workspaces}
           workspaceOrder={state.workspaceOrder}
           activeWorkspaceId={state.activeWorkspaceId}
+          notifications={state.notifications}
           onSelectWorkspace={(id) => dispatch({ type: "SELECT_WORKSPACE", workspaceId: id })}
           onCloseWorkspace={handleCloseWorkspace}
           onAddWorkspace={() => dispatch({ type: "ADD_WORKSPACE" })}
@@ -358,6 +431,7 @@ export function TerminalPage() {
             node={ws.root}
             groups={ws.groups}
             focusedGroupId={ws.focusedGroupId}
+            isSplit={ws.root.type === "split"}
             onFocusGroup={handleFocusGroup}
             onResize={handleResize}
             onSelectTab={handleSelectTab}

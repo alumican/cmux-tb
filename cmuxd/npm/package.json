@@ -1,0 +1,25 @@
+{
+  "name": "cmuxd",
+  "version": "0.1.0",
+  "description": "Shared terminal backend daemon for cmux — manages PTY sessions, workspace state, and multi-client sync",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/manaflow-ai/cmux"
+  },
+  "bin": {
+    "cmuxd": "cli.mjs"
+  },
+  "scripts": {
+    "postinstall": "node postinstall.mjs"
+  },
+  "os": ["darwin", "linux"],
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "cli.mjs",
+    "postinstall.mjs",
+    "bin/"
+  ]
+}

@@ -913,6 +913,31 @@ test.describe("Tab drag - between group tab bars", () => {
 })
 
 test.describe("Tab drag - reorder within group", () => {
+  test("tab bar drop target follows mouse position", async ({ page }) => {
+    await addTabBtn(page).click()
+    await expect(tabsInFocusedGroup(page)).toHaveCount(2)
+
+    const tab1 = tabsInFocusedGroup(page).first()
+    const tab2 = tabsInFocusedGroup(page).nth(1)
+    const tab1Center = await center(tab1)
+    const tab2Box = await tab2.boundingBox()
+    expect(tab2Box).not.toBeNull()
+
+    await page.mouse.move(tab1Center.x, tab1Center.y)
+    await page.mouse.down()
+    await page.mouse.move(tab2Box!.x + 2, tab2Box!.y + tab2Box!.height / 2, {
+      steps: 8,
+    })
+
+    const indicator = tabDropIndicator(page)
+    await expect(indicator).toBeVisible()
+    const indicatorBox = await indicator.boundingBox()
+    expect(indicatorBox).not.toBeNull()
+    expect(Math.abs(indicatorBox!.x - tab2Box!.x)).toBeLessThan(8)
+
+    await page.mouse.up()
+  })
+
   test("reorder tab within same group's tab bar", async ({ page }) => {
     // Add tabs to have 3
     await addTabBtn(page).click()
@@ -1231,3 +1256,369 @@ test.describe("Spatial navigation in 2x2 grid", () => {
   })
 })
 
+// ─── Overflow containment tests ───────────────────────────────────────────
+
+test.describe("Overflow containment", () => {
+  /** Inject an oversized element into a surface's inner container */
+  async function injectOversizedContent(page: Page, surfaceLocator: Locator) {
+    const testId = await surfaceLocator.getAttribute("data-testid")
+    await page.evaluate((tid) => {
+      const surface = document.querySelector(`[data-testid="${tid}"]`)
+      if (!surface) return
+      const big = document.createElement("div")
+      big.setAttribute("data-testid", "overflow-probe")
+      big.style.cssText = "width:5000px;height:5000px;background:red;position:relative;"
+      surface.appendChild(big)
+    }, testId)
+  }
+
+  test("oversized content in a single pane does not change split-area size", async ({ page }) => {
+    const splitArea = page.getByTestId("split-area")
+    const before = await splitArea.boundingBox()
+    expect(before).not.toBeNull()
+
+    await injectOversizedContent(page, surfaces(page).first())
+
+    const after = await splitArea.boundingBox()
+    expect(after).not.toBeNull()
+    expect(after!.width).toBe(before!.width)
+    expect(after!.height).toBe(before!.height)
+  })
+
+  test("oversized content in left pane does not push right pane", async ({ page }) => {
+    await splitRight(page).click()
+    await expect(groups(page)).toHaveCount(2)
+
+    const leftSurface = surfaces(page).first()
+    const rightSurface = surfaces(page).nth(1)
+    const rightBefore = await rightSurface.boundingBox()
+    expect(rightBefore).not.toBeNull()
+
+    await injectOversizedContent(page, leftSurface)
+
+    const rightAfter = await rightSurface.boundingBox()
+    expect(rightAfter).not.toBeNull()
+    expect(rightAfter!.x).toBe(rightBefore!.x)
+    expect(rightAfter!.width).toBe(rightBefore!.width)
+    expect(rightAfter!.height).toBe(rightBefore!.height)
+  })
+
+  test("oversized content in top pane does not push bottom pane", async ({ page }) => {
+    await splitDown(page).click()
+    await expect(groups(page)).toHaveCount(2)
+
+    const topSurface = surfaces(page).first()
+    const bottomSurface = surfaces(page).nth(1)
+    const bottomBefore = await bottomSurface.boundingBox()
+    expect(bottomBefore).not.toBeNull()
+
+    await injectOversizedContent(page, topSurface)
+
+    const bottomAfter = await bottomSurface.boundingBox()
+    expect(bottomAfter).not.toBeNull()
+    expect(bottomAfter!.y).toBe(bottomBefore!.y)
+    expect(bottomAfter!.width).toBe(bottomBefore!.width)
+    expect(bottomAfter!.height).toBe(bottomBefore!.height)
+  })
+
+  test("surface clips oversized content (no visible overflow)", async ({ page }) => {
+    await splitRight(page).click()
+    const leftSurface = surfaces(page).first()
+    await injectOversizedContent(page, leftSurface)
+
+    const surfaceBox = await leftSurface.boundingBox()
+    expect(surfaceBox).not.toBeNull()
+
+    // The probe is 5000x5000 but the surface should clip it
+    const probeBox = await page.getByTestId("overflow-probe").boundingBox()
+    expect(probeBox).not.toBeNull()
+    // Visible portion must not exceed the surface bounds
+    const visibleRight = Math.min(probeBox!.x + probeBox!.width, surfaceBox!.x + surfaceBox!.width)
+    const visibleBottom = Math.min(probeBox!.y + probeBox!.height, surfaceBox!.y + surfaceBox!.height)
+    expect(visibleRight).toBeLessThanOrEqual(surfaceBox!.x + surfaceBox!.width + 1)
+    expect(visibleBottom).toBeLessThanOrEqual(surfaceBox!.y + surfaceBox!.height + 1)
+  })
+
+  test("oversized content in 2x2 grid does not affect other panes", async ({ page }) => {
+    // Create 2x2: split right, focus left, split down
+    await splitRight(page).click()
+    await surfaces(page).first().click()
+    await splitDown(page).click()
+    await expect(groups(page)).toHaveCount(3)
+
+    // Record all pane boxes
+    const allGroups = groups(page)
+    const count = await allGroups.count()
+    const beforeBoxes = []
+    for (let i = 0; i < count; i++) {
+      beforeBoxes.push(await allGroups.nth(i).boundingBox())
+    }
+
+    // Inject into the top-left pane (first in DOM)
+    await injectOversizedContent(page, surfaces(page).first())
+
+    // Verify all other panes are unchanged
+    for (let i = 1; i < count; i++) {
+      const after = await allGroups.nth(i).boundingBox()
+      expect(after).not.toBeNull()
+      expect(after!.x).toBe(beforeBoxes[i]!.x)
+      expect(after!.y).toBe(beforeBoxes[i]!.y)
+      expect(after!.width).toBe(beforeBoxes[i]!.width)
+      expect(after!.height).toBe(beforeBoxes[i]!.height)
+    }
+  })
+
+  test("group container itself does not grow beyond split-area", async ({ page }) => {
+    await splitRight(page).click()
+    const splitArea = page.getByTestId("split-area")
+    const areaBox = await splitArea.boundingBox()
+
+    await injectOversizedContent(page, surfaces(page).first())
+
+    const allGroups = groups(page)
+    const count = await allGroups.count()
+    for (let i = 0; i < count; i++) {
+      const box = await allGroups.nth(i).boundingBox()
+      expect(box).not.toBeNull()
+      // Group must be fully contained within split-area
+      expect(box!.x).toBeGreaterThanOrEqual(areaBox!.x - 1)
+      expect(box!.y).toBeGreaterThanOrEqual(areaBox!.y - 1)
+      expect(box!.x + box!.width).toBeLessThanOrEqual(areaBox!.x + areaBox!.width + 1)
+      expect(box!.y + box!.height).toBeLessThanOrEqual(areaBox!.y + areaBox!.height + 1)
+    }
+  })
+})
+
+// ─── Keyboard shortcut: Alt/Option+T (new tab), Alt/Option+N (new workspace) ─
+
+function workspaceItems(page: Page) {
+  return page.locator("[data-testid^='workspace-']")
+}
+
+test.describe("Alt+T new tab and Alt+N new workspace", () => {
+  test("Alt+T adds a tab to the focused group", async ({ page }) => {
+    await expect(tabsInFocusedGroup(page)).toHaveCount(1)
+
+    await page.keyboard.press("Alt+t")
+    await expect(tabsInFocusedGroup(page)).toHaveCount(2)
+
+    await page.keyboard.press("Alt+t")
+    await expect(tabsInFocusedGroup(page)).toHaveCount(3)
+  })
+
+  test("Alt+T adds tab to the correct group when split", async ({ page }) => {
+    await splitRight(page).click()
+    // Focus is on the right (new) group
+    await expect(tabsInFocusedGroup(page)).toHaveCount(1)
+    const rightTabs = await allTabs(page).count() // 2 total
+
+    await page.keyboard.press("Alt+t")
+    // Right group gets the new tab
+    await expect(tabsInFocusedGroup(page)).toHaveCount(2)
+    await expect(allTabs(page)).toHaveCount(rightTabs + 1)
+
+    // Click left group to focus it
+    await surfaces(page).first().click()
+    await expect(tabsInFocusedGroup(page)).toHaveCount(1)
+
+    await page.keyboard.press("Alt+t")
+    await expect(tabsInFocusedGroup(page)).toHaveCount(2)
+  })
+
+  test("Alt+N creates a new workspace", async ({ page }) => {
+    await expect(workspaceItems(page)).toHaveCount(1)
+
+    await page.keyboard.press("Alt+n")
+    await expect(workspaceItems(page)).toHaveCount(2)
+
+    // The new workspace should be the active one
+    const activeWs = page.locator("[data-testid^='workspace-'][data-active='true']")
+    await expect(activeWs).toHaveCount(1)
+  })
+
+  test("Alt+N creates multiple workspaces", async ({ page }) => {
+    await page.keyboard.press("Alt+n")
+    await page.keyboard.press("Alt+n")
+    await page.keyboard.press("Alt+n")
+    await expect(workspaceItems(page)).toHaveCount(4)
+  })
+
+  test("Alt+T in new workspace adds tab there, not the old one", async ({ page }) => {
+    // Start with 1 tab in workspace 1
+    await expect(tabsInFocusedGroup(page)).toHaveCount(1)
+
+    // Create new workspace
+    await page.keyboard.press("Alt+n")
+    await expect(workspaceItems(page)).toHaveCount(2)
+
+    // New workspace should have 1 tab
+    await expect(tabsInFocusedGroup(page)).toHaveCount(1)
+
+    // Add tab in the new workspace
+    await page.keyboard.press("Alt+t")
+    await expect(tabsInFocusedGroup(page)).toHaveCount(2)
+  })
+
+  test("Alt+W closes the active tab in focused group", async ({ page }) => {
+    // Add two more tabs so we have 3
+    await page.keyboard.press("Alt+t")
+    await page.keyboard.press("Alt+t")
+    await expect(tabsInFocusedGroup(page)).toHaveCount(3)
+
+    await page.keyboard.press("Alt+w")
+    await expect(tabsInFocusedGroup(page)).toHaveCount(2)
+
+    await page.keyboard.press("Alt+w")
+    await expect(tabsInFocusedGroup(page)).toHaveCount(1)
+  })
+
+  test("Alt+W on last tab in only group is a no-op", async ({ page }) => {
+    await expect(tabsInFocusedGroup(page)).toHaveCount(1)
+    await page.keyboard.press("Alt+w")
+    await expect(tabsInFocusedGroup(page)).toHaveCount(1)
+    await expect(groups(page)).toHaveCount(1)
+  })
+})
+
+// ─── Alt+1-9 workspace nav, Ctrl+1-9 tab nav ─────────────────────────────
+
+function activeWorkspace(page: Page) {
+  return page.locator("[data-testid^='workspace-'][data-active='true']")
+}
+
+test.describe("Alt+1-9 workspace navigation", () => {
+  test("Alt+1 through Alt+3 switches workspaces", async ({ page }) => {
+    // Create 3 workspaces total
+    await page.keyboard.press("Alt+n")
+    await page.keyboard.press("Alt+n")
+    await expect(workspaceItems(page)).toHaveCount(3)
+
+    // Get workspace testids in order
+    const ws1 = await workspaceItems(page).nth(0).getAttribute("data-testid")
+    const ws2 = await workspaceItems(page).nth(1).getAttribute("data-testid")
+    const ws3 = await workspaceItems(page).nth(2).getAttribute("data-testid")
+
+    // Currently on workspace 3 (last created)
+    await expect(activeWorkspace(page)).toHaveAttribute("data-testid", ws3!)
+
+    // Alt+1 → workspace 1
+    await page.keyboard.press("Alt+1")
+    await expect(activeWorkspace(page)).toHaveAttribute("data-testid", ws1!)
+
+    // Alt+2 → workspace 2
+    await page.keyboard.press("Alt+2")
+    await expect(activeWorkspace(page)).toHaveAttribute("data-testid", ws2!)
+
+    // Alt+3 → workspace 3
+    await page.keyboard.press("Alt+3")
+    await expect(activeWorkspace(page)).toHaveAttribute("data-testid", ws3!)
+  })
+
+  test("Alt+N beyond workspace count is a no-op", async ({ page }) => {
+    // Only 1 workspace
+    const ws1 = await activeWorkspace(page).getAttribute("data-testid")
+    await page.keyboard.press("Alt+2")
+    // Still on workspace 1
+    await expect(activeWorkspace(page)).toHaveAttribute("data-testid", ws1!)
+  })
+
+  test("Alt+1 stays on first workspace when already there", async ({ page }) => {
+    const ws1 = await activeWorkspace(page).getAttribute("data-testid")
+    await page.keyboard.press("Alt+1")
+    await expect(activeWorkspace(page)).toHaveAttribute("data-testid", ws1!)
+  })
+})
+
+test.describe("Ctrl+1-9 tab navigation", () => {
+  test("Ctrl+1 through Ctrl+3 switches tabs in focused group", async ({ page }) => {
+    // Create 3 tabs total
+    await page.keyboard.press("Alt+t")
+    await page.keyboard.press("Alt+t")
+    await expect(tabsInFocusedGroup(page)).toHaveCount(3)
+
+    const tab1 = await tabsInFocusedGroup(page).nth(0).getAttribute("data-testid")
+    const tab2 = await tabsInFocusedGroup(page).nth(1).getAttribute("data-testid")
+    const tab3 = await tabsInFocusedGroup(page).nth(2).getAttribute("data-testid")
+
+    // Currently on tab 3 (last created)
+    await expect(activeTabInFocusedGroup(page)).toHaveAttribute("data-testid", tab3!)
+
+    // Ctrl+1 → tab 1
+    await page.keyboard.press("Control+1")
+    await expect(activeTabInFocusedGroup(page)).toHaveAttribute("data-testid", tab1!)
+
+    // Ctrl+2 → tab 2
+    await page.keyboard.press("Control+2")
+    await expect(activeTabInFocusedGroup(page)).toHaveAttribute("data-testid", tab2!)
+
+    // Ctrl+3 → tab 3
+    await page.keyboard.press("Control+3")
+    await expect(activeTabInFocusedGroup(page)).toHaveAttribute("data-testid", tab3!)
+  })
+
+  test("Ctrl+N beyond tab count is a no-op", async ({ page }) => {
+    // Only 1 tab
+    const tab1 = await activeTabInFocusedGroup(page).getAttribute("data-testid")
+    await page.keyboard.press("Control+2")
+    await expect(activeTabInFocusedGroup(page)).toHaveAttribute("data-testid", tab1!)
+  })
+
+  test("Ctrl+1-9 targets the focused group in a split", async ({ page }) => {
+    // Split right, add tabs to right group
+    await splitRight(page).click()
+    await page.keyboard.press("Alt+t")
+    await page.keyboard.press("Alt+t")
+    await expect(tabsInFocusedGroup(page)).toHaveCount(3)
+
+    const tab1 = await tabsInFocusedGroup(page).nth(0).getAttribute("data-testid")
+
+    // Switch to tab 1 via Ctrl+1
+    await page.keyboard.press("Control+1")
+    await expect(activeTabInFocusedGroup(page)).toHaveAttribute("data-testid", tab1!)
+
+    // Left group should still have only 1 tab (unaffected)
+    await surfaces(page).first().click()
+    await expect(tabsInFocusedGroup(page)).toHaveCount(1)
+  })
+})
+
+// ─── Middle-click close ───────────────────────────────────────────────────
+
+test.describe("Middle-click close", () => {
+  test("middle-click on tab closes it", async ({ page }) => {
+    await page.keyboard.press("Alt+t")
+    await page.keyboard.press("Alt+t")
+    await expect(tabsInFocusedGroup(page)).toHaveCount(3)
+
+    // Middle-click the second tab
+    const tab2 = tabsInFocusedGroup(page).nth(1)
+    await tab2.click({ button: "middle" })
+    await expect(tabsInFocusedGroup(page)).toHaveCount(2)
+  })
+
+  test("middle-click on last tab in only group is a no-op", async ({ page }) => {
+    await expect(tabsInFocusedGroup(page)).toHaveCount(1)
+    const tab = tabsInFocusedGroup(page).first()
+    await tab.click({ button: "middle" })
+    await expect(tabsInFocusedGroup(page)).toHaveCount(1)
+    await expect(groups(page)).toHaveCount(1)
+  })
+
+  test("middle-click on workspace closes it", async ({ page }) => {
+    await page.keyboard.press("Alt+n")
+    await page.keyboard.press("Alt+n")
+    await expect(workspaceItems(page)).toHaveCount(3)
+
+    // Middle-click the second workspace
+    const ws2 = workspaceItems(page).nth(1)
+    await ws2.click({ button: "middle" })
+    await expect(workspaceItems(page)).toHaveCount(2)
+  })
+
+  test("middle-click on last workspace is a no-op", async ({ page }) => {
+    await expect(workspaceItems(page)).toHaveCount(1)
+    const ws = workspaceItems(page).first()
+    await ws.click({ button: "middle" })
+    await expect(workspaceItems(page)).toHaveCount(1)
+  })
+})

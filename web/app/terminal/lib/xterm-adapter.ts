@@ -75,7 +75,7 @@ export class XtermAdapter implements TerminalAdapter {
       const { WebglAddon } = await import("@xterm/addon-webgl")
       this.terminal.loadAddon(new WebglAddon())
     } catch {
-      // Canvas fallback — xterm.js uses canvas renderer by default
+      // Falls back to DOM renderer (no canvas) — fine for headless / no-GPU
     }
 
     // Web links (clickable URLs)

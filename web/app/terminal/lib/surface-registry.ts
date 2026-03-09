@@ -10,6 +10,30 @@ interface TerminalEntry {
 
 type TitleChangeHandler = (tabId: string, title: string) => void
 
+export interface TabMetadata {
+  title?: string
+  description?: string
+  cwd?: string
+  dir?: string
+  branch?: string
+  isDirty?: boolean
+  ports?: number[]
+}
+
+type MetadataChangeHandler = (tabId: string, metadata: TabMetadata) => void
+
+export interface NotificationData {
+  id: number
+  sessionId: number
+  title: string
+  subtitle?: string
+  body?: string
+  createdAt: number
+  isRead: boolean
+}
+
+type NotificationHandler = (type: "list" | "add" | "read" | "cleared", data: unknown) => void
+
 // --- Fake bash ---
 
 interface ShellState {
@@ -593,6 +617,8 @@ class CmuxdConnection {
   private _onClientLeft: Array<(clientId: number) => void> = []
   private _onDriverChanged: Array<(sessionId: number, driverId: number | null, mode?: string) => void> = []
   private _onSessionResized: Array<(sessionId: number, cols: number, rows: number) => void> = []
+  private _onSessionMetadata: Array<(sessionId: number, metadata: TabMetadata) => void> = []
+  private _onNotification: Array<NotificationHandler> = []
   // Terminal config from cmuxd (parsed from Ghostty config)
   private _terminalConfig: TerminalConfig | null = null
   // All text messages received (for e2e test inspection)
@@ -602,6 +628,11 @@ class CmuxdConnection {
     return new Promise((resolve, reject) => {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         resolve()
+        return
+      }
+      // If already connecting, wait for the existing connection
+      if (this.ws && this.ws.readyState === WebSocket.CONNECTING) {
+        this.waitReady().then(resolve, reject)
         return
       }
       const ws = new WebSocket(url)
@@ -636,6 +667,29 @@ class CmuxdConnection {
             for (const h of this._onDriverChanged) h(msg.sessionId, msg.driverId, msg.mode)
           } else if (msg.type === "session_resized") {
             for (const h of this._onSessionResized) h(msg.sessionId, msg.cols, msg.rows)
+          } else if (msg.type === "session_metadata") {
+            const m = msg.metadata as Record<string, unknown> | undefined
+            if (m) {
+              const meta: TabMetadata = { title: m.title as string | undefined }
+              if (m.description) meta.description = m.description as string
+              if (m.cwd) meta.cwd = m.cwd as string
+              if (m.cwd) meta.dir = (m.cwd as string).split("/").pop() || undefined
+              const git = m.git as Record<string, unknown> | undefined
+              if (git) {
+                meta.branch = git.branch as string | undefined
+                meta.isDirty = git.isDirty as boolean | undefined
+              }
+              if (Array.isArray(m.ports) && m.ports.length > 0) meta.ports = m.ports as number[]
+              for (const h of this._onSessionMetadata) h(msg.sessionId, meta)
+            }
+          } else if (msg.type === "notifications_list") {
+            for (const h of this._onNotification) h("list", msg.notifications)
+          } else if (msg.type === "notification") {
+            for (const h of this._onNotification) h("add", msg.notification)
+          } else if (msg.type === "notification_read") {
+            for (const h of this._onNotification) h("read", msg.notificationId)
+          } else if (msg.type === "notifications_cleared") {
+            for (const h of this._onNotification) h("cleared", msg.sessionId ?? null)
           }
         } else {
           // Binary: [4-byte session-id LE][data]
@@ -728,6 +782,22 @@ class CmuxdConnection {
   onClientLeft(handler: (clientId: number) => void) { this._onClientLeft.push(handler) }
   onDriverChanged(handler: (sessionId: number, driverId: number | null, mode?: string) => void) { this._onDriverChanged.push(handler) }
   onSessionResized(handler: (sessionId: number, cols: number, rows: number) => void) { this._onSessionResized.push(handler) }
+  onSessionMetadata(handler: (sessionId: number, metadata: TabMetadata) => void) { this._onSessionMetadata.push(handler) }
+  onNotification(handler: NotificationHandler) { this._onNotification.push(handler) }
+
+  markNotificationRead(notificationId: number) {
+    this.send(JSON.stringify({ type: "mark_notification_read", notificationId }))
+  }
+
+  markAllNotificationsReadForSession(sessionId: number) {
+    this.send(JSON.stringify({ type: "mark_notification_read", sessionId }))
+  }
+
+  clearNotifications(sessionId?: number) {
+    const msg: Record<string, unknown> = { type: "clear_notifications" }
+    if (sessionId != null) msg.sessionId = sessionId
+    this.send(JSON.stringify(msg))
+  }
 
   close() {
     this.ws?.close()
@@ -748,6 +818,10 @@ const PTY_WS_URL = "ws://localhost:3778/ws"
 class SurfaceRegistry {
   private terminals = new Map<string, TerminalEntry>()
   private titleChangeHandler: TitleChangeHandler | null = null
+  private metadataChangeHandler: MetadataChangeHandler | null = null
+  private notificationHandler: NotificationHandler | null = null
+  private pendingMetadataEvents: Array<{ tabId: string; metadata: TabMetadata }> = []
+  private pendingNotificationEvents: Array<{ type: "list" | "add" | "read" | "cleared"; data: unknown }> = []
   private muxConnection: CmuxdConnection | null = null
   private tabSessionMap = new Map<string, number>() // tabId -> sessionId
 
@@ -760,6 +834,27 @@ class SurfaceRegistry {
 
     if (!this.muxConnection) {
       this.muxConnection = new CmuxdConnection()
+      // Register session_metadata handler (maps sessionId → tabId, buffers if handler not set)
+      this.muxConnection.onSessionMetadata((sessionId, metadata) => {
+        for (const [tabId, sid] of this.tabSessionMap) {
+          if (sid === sessionId) {
+            if (this.metadataChangeHandler) {
+              this.metadataChangeHandler(tabId, metadata)
+            } else {
+              this.pendingMetadataEvents.push({ tabId, metadata })
+            }
+            break
+          }
+        }
+      })
+      // Register notification handler (buffers events until handler is set)
+      this.muxConnection.onNotification((type, data) => {
+        if (this.notificationHandler) {
+          this.notificationHandler(type, data)
+        } else {
+          this.pendingNotificationEvents.push({ type, data })
+        }
+      })
     }
     // Connect with default dimensions — will be resized once terminal is created
     await this.muxConnection.connect(`${PTY_WS_URL}?mode=mux&cols=80&rows=24`)
@@ -874,6 +969,21 @@ class SurfaceRegistry {
     // Lazily connect the shared mux WebSocket
     if (!this.muxConnection) {
       this.muxConnection = new CmuxdConnection()
+      this.muxConnection.onSessionMetadata((sessionId, metadata) => {
+        for (const [tabId, sid] of this.tabSessionMap) {
+          if (sid === sessionId) {
+            this.metadataChangeHandler?.(tabId, metadata)
+            break
+          }
+        }
+      })
+      this.muxConnection.onNotification((type, data) => {
+        if (this.notificationHandler) {
+          this.notificationHandler(type, data)
+        } else {
+          this.pendingNotificationEvents.push({ type, data })
+        }
+      })
     }
     if (!this.muxConnection.ready) {
       const { cols, rows } = entry.adapter.proposeDimensions() ?? { cols: 80, rows: 24 }
@@ -991,6 +1101,24 @@ class SurfaceRegistry {
 
   setTitleChangeHandler(handler: TitleChangeHandler): void {
     this.titleChangeHandler = handler
+  }
+
+  setMetadataChangeHandler(handler: MetadataChangeHandler): void {
+    this.metadataChangeHandler = handler
+    // Replay any events that arrived before the handler was set
+    for (const ev of this.pendingMetadataEvents) {
+      handler(ev.tabId, ev.metadata)
+    }
+    this.pendingMetadataEvents = []
+  }
+
+  setNotificationHandler(handler: NotificationHandler): void {
+    this.notificationHandler = handler
+    // Replay any events that arrived before the handler was set
+    for (const ev of this.pendingNotificationEvents) {
+      handler(ev.type, ev.data)
+    }
+    this.pendingNotificationEvents = []
   }
 }
 

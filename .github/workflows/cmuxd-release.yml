@@ -1,0 +1,82 @@
+name: cmuxd Release
+
+on:
+  push:
+    tags:
+      - "cmuxd-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-14         # Apple Silicon runner
+            target: aarch64-macos
+            artifact: cmuxd-darwin-arm64
+          - os: macos-13         # Intel runner
+            target: x86_64-macos
+            artifact: cmuxd-darwin-x64
+          - os: ubuntu-latest
+            target: x86_64-linux-gnu
+            artifact: cmuxd-linux-x64
+          - os: ubuntu-latest
+            target: aarch64-linux-gnu
+            artifact: cmuxd-linux-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Build cmuxd
+        run: cd cmuxd && zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }}
+
+      - name: Copy binary
+        run: cp cmuxd/zig-out/bin/cmuxd ${{ matrix.artifact }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Make binaries executable
+        run: chmod +x artifacts/*/cmuxd-*
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*/cmuxd-*
+
+  npm-publish:
+    needs: [build, release]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Publish to npm
+        working-directory: cmuxd/npm
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

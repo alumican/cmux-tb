@@ -9,6 +9,7 @@ interface TerminalSurfaceProps {
   tabId: string
   surfaceId: string
   isFocused: boolean
+  isSplit: boolean
   onFocus: () => void
   dropZone?: DropDirection | null
 }
@@ -17,6 +18,7 @@ export function TerminalSurface({
   tabId,
   surfaceId,
   isFocused,
+  isSplit,
   onFocus,
   dropZone,
 }: TerminalSurfaceProps) {
@@ -86,6 +88,18 @@ export function TerminalSurface({
       onClick={onFocus}
     >
       <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
+      {isSplit && !isFocused && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            background: "#171717",
+            opacity: 0.3,
+            pointerEvents: "none",
+            zIndex: 1,
+          }}
+        />
+      )}
       {dropZone && <DropZoneOverlay direction={dropZone} />}
     </div>
   )
