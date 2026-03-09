@@ -117,6 +117,7 @@ final class MarkdownDragPerformanceUITests: XCTestCase {
         while Date() < deadline {
             if let data = loadSocketSanityData(),
                data["socketReady"] == "1",
+               data["workspaceReady"] == "1",
                data["socketPingResponse"] == "PONG" {
                 return data
             }
@@ -171,6 +172,9 @@ final class MarkdownDragPerformanceUITests: XCTestCase {
     private func waitForCurrentWorkspaceId(timeout: TimeInterval) -> String? {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
+            if let workspaceId = loadSocketSanityData()?["currentWorkspaceId"], !workspaceId.isEmpty {
+                return workspaceId
+            }
             if let response = v2Call("workspace.current"),
                let result = response["result"] as? [String: Any],
                let workspaceId = result["workspace_id"] as? String,
@@ -197,6 +201,9 @@ final class MarkdownDragPerformanceUITests: XCTestCase {
                 return selected
             }
             RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+        if let workspaceId = loadSocketSanityData()?["currentWorkspaceId"], !workspaceId.isEmpty {
+            return workspaceId
         }
         return nil
     }

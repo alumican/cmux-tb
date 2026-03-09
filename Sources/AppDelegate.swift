@@ -6906,6 +6906,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 "socketExpectedPath": env["CMUX_SOCKET_PATH"] ?? "",
                 "socketMode": "off",
                 "socketReady": "0",
+                "workspaceReady": "0",
+                "currentWorkspaceId": "",
                 "socketPingResponse": "",
                 "socketIsRunning": "0",
                 "socketAcceptLoopAlive": "0",
@@ -6920,6 +6922,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             "socketExpectedPath": config.path,
             "socketMode": config.mode.rawValue,
             "socketReady": "pending",
+            "workspaceReady": "pending",
+            "currentWorkspaceId": "",
             "socketPingResponse": "",
         ], at: path)
 
@@ -6938,6 +6942,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                     ? TerminalController.probeSocketCommand("ping", at: socketPath, timeout: 1.0)
                     : nil
                 let isReady = health.isHealthy && pingResponse == "PONG"
+                let currentWorkspaceId = self?.currentWorkspaceIdForSocketSanity() ?? ""
+                let workspaceReady = !currentWorkspaceId.isEmpty
                 let failureSignals = {
                     var signals = health.failureSignals
                     if health.isHealthy && pingResponse != "PONG" {
@@ -6952,6 +6958,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                         "socketExpectedPath": socketPath,
                         "socketMode": socketMode,
                         "socketReady": isReady ? "1" : (isTimedOut ? "0" : "pending"),
+                        "workspaceReady": workspaceReady ? "1" : (isTimedOut ? "0" : "pending"),
+                        "currentWorkspaceId": currentWorkspaceId,
                         "socketPingResponse": pingResponse ?? "",
                         "socketIsRunning": health.isRunning ? "1" : "0",
                         "socketAcceptLoopAlive": health.acceptLoopAlive ? "1" : "0",
@@ -6959,7 +6967,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                         "socketPathExists": health.socketPathExists ? "1" : "0",
                         "socketFailureSignals": failureSignals,
                     ], at: dataPath)
-                    guard !isTimedOut, !isReady else { return }
+                    guard !isTimedOut, !(isReady && workspaceReady) else { return }
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                         publish()
                     }
@@ -6968,6 +6976,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
 
         publish()
+    }
+
+    private func currentWorkspaceIdForSocketSanity() -> String {
+        if let selectedWorkspaceId = tabManager?.selectedTabId {
+            return selectedWorkspaceId.uuidString
+        }
+        if let firstWorkspaceId = tabManager?.tabs.first?.id {
+            return firstWorkspaceId.uuidString
+        }
+        return ""
     }
 
     private func setupSocketSanityUITestIfNeeded() {

@@ -2259,8 +2259,7 @@ final class WindowBrowserPortal: NSObject {
         anchorHidden: Bool,
         tinyFrame: Bool,
         hasFiniteFrame: Bool,
-        outsideHostBounds: Bool,
-        refreshReasons: inout [String]
+        outsideHostBounds: Bool
     ) {
         if plan.shouldHideContainer, !containerView.isHidden {
 #if DEBUG
@@ -2294,9 +2293,6 @@ final class WindowBrowserPortal: NSObject {
         containerView.setDropZoneOverlay(
             zone: plan.shouldShowDropZone && !containerView.isHidden ? entry.dropZone : nil
         )
-        if plan.shouldRefreshForReveal {
-            refreshReasons.append("reveal")
-        }
     }
 
     private func synchronizeAllWebViews(excluding webViewIdToSkip: ObjectIdentifier?, source: String) {
@@ -2553,7 +2549,6 @@ final class WindowBrowserPortal: NSObject {
             CATransaction.setDisableActions(true)
             containerView.frame = targetFrame
             CATransaction.commit()
-            refreshReasons.append("frame")
         }
 
         if frameApplicationPlan.shouldNormalizeBounds {
@@ -2569,7 +2564,6 @@ final class WindowBrowserPortal: NSObject {
                 "target=\(browserPortalDebugFrame(frameApplicationPlan.expectedContainerBounds))"
             )
 #endif
-            refreshReasons.append("bounds")
         }
 
         let containerBounds = containerView.bounds
@@ -2602,7 +2596,6 @@ final class WindowBrowserPortal: NSObject {
                 "source=\(source)"
             )
 #endif
-            refreshReasons.append("webFrame")
         }
 
         if visibleSyncPlan.shouldApplyPresentationApplicationPlan {
@@ -2616,13 +2609,15 @@ final class WindowBrowserPortal: NSObject {
                 anchorHidden: anchorHidden,
                 tinyFrame: geometryState.tinyFrame,
                 hasFiniteFrame: geometryState.hasFiniteFrame,
-                outsideHostBounds: geometryState.outsideHostBounds,
-                refreshReasons: &refreshReasons
+                outsideHostBounds: geometryState.outsideHostBounds
             )
         }
-        if visibleSyncPlan.shouldAppendAnchorRefreshReason {
-            refreshReasons.append("anchor")
-        }
+        let hostedRefreshPlan = BrowserLifecycleExecutor.hostedRefreshPlan(
+            visibleSyncPlan: visibleSyncPlan,
+            frameApplicationPlan: frameApplicationPlan,
+            webFrameNormalizationPlan: webFrameNormalizationPlan,
+            presentationApplicationPlan: presentationApplicationPlan
+        )
         if visibleSyncPlan.shouldApplyTransientRecoveryPlan,
            let transientRecoveryPlan,
            let transientRecoveryReason {
@@ -2638,11 +2633,11 @@ final class WindowBrowserPortal: NSObject {
         } else if visibleSyncPlan.shouldTrackVisibleEntry {
             entriesByWebViewId[webViewId] = entry
         }
-        if visibleSyncPlan.shouldRefreshHostedPresentation {
+        if hostedRefreshPlan.shouldRefreshHostedPresentation {
             refreshHostedWebViewPresentation(
                 webView,
                 in: containerView,
-                reason: "\(source):" + refreshReasons.joined(separator: ",")
+                reason: "\(source):" + hostedRefreshPlan.reasons.map(\.rawValue).joined(separator: ",")
             )
         }
         hostView.reapplyHostedInspectorDividerIfNeeded(in: containerView, reason: "portal.sync")

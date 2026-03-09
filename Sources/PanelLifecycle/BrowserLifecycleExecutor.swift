@@ -179,6 +179,22 @@ struct BrowserLifecycleExecutorVisibleSyncPlan: Sendable {
     let shouldRefreshHostedPresentation: Bool
 }
 
+enum BrowserLifecycleExecutorHostedRefreshReason: String, Sendable {
+    case frame
+    case bounds
+    case webFrame
+    case reveal
+    case anchor
+}
+
+struct BrowserLifecycleExecutorHostedRefreshPlan: Sendable {
+    let reasons: [BrowserLifecycleExecutorHostedRefreshReason]
+
+    var shouldRefreshHostedPresentation: Bool {
+        !reasons.isEmpty
+    }
+}
+
 enum BrowserLifecycleExecutor {
     static func isCurrentGenerationBoundVisibleReadyForWorkspaceHandoff(
         currentRecord: PanelLifecycleRecordSnapshot,
@@ -655,7 +671,11 @@ enum BrowserLifecycleExecutor {
         let shouldAppendAnchorRefreshReason = forcePresentationRefresh
         let shouldRefreshHostedPresentation =
             !presentationApplicationPlan.shouldHideContainer &&
-            (hasPendingRefreshReasons || shouldAppendAnchorRefreshReason)
+            (
+                hasPendingRefreshReasons ||
+                shouldAppendAnchorRefreshReason ||
+                presentationApplicationPlan.shouldRefreshForReveal
+            )
         return BrowserLifecycleExecutorVisibleSyncPlan(
             shouldPreserveVisibleOnTransientGeometry: shouldPreserveVisibleOnTransientGeometry,
             shouldApplyPresentationApplicationPlan: !shouldPreserveVisibleOnTransientGeometry,
@@ -666,6 +686,35 @@ enum BrowserLifecycleExecutor {
             shouldAppendAnchorRefreshReason: shouldAppendAnchorRefreshReason,
             shouldRefreshHostedPresentation: shouldRefreshHostedPresentation
         )
+    }
+
+    static func hostedRefreshPlan(
+        visibleSyncPlan: BrowserLifecycleExecutorVisibleSyncPlan,
+        frameApplicationPlan: BrowserLifecycleExecutorFrameApplicationPlan,
+        webFrameNormalizationPlan: BrowserLifecycleExecutorWebFrameNormalizationPlan,
+        presentationApplicationPlan: BrowserLifecycleExecutorPresentationApplicationPlan
+    ) -> BrowserLifecycleExecutorHostedRefreshPlan {
+        guard !presentationApplicationPlan.shouldHideContainer else {
+            return BrowserLifecycleExecutorHostedRefreshPlan(reasons: [])
+        }
+
+        var reasons: [BrowserLifecycleExecutorHostedRefreshReason] = []
+        if frameApplicationPlan.shouldUpdateFrame {
+            reasons.append(.frame)
+        }
+        if frameApplicationPlan.shouldNormalizeBounds {
+            reasons.append(.bounds)
+        }
+        if webFrameNormalizationPlan.shouldNormalizeWebFrame {
+            reasons.append(.webFrame)
+        }
+        if presentationApplicationPlan.shouldRefreshForReveal {
+            reasons.append(.reveal)
+        }
+        if visibleSyncPlan.shouldAppendAnchorRefreshReason {
+            reasons.append(.anchor)
+        }
+        return BrowserLifecycleExecutorHostedRefreshPlan(reasons: reasons)
     }
 
     private static func rectApproximatelyEqual(_ lhs: CGRect, _ rhs: CGRect, tolerance: CGFloat = 0.5) -> Bool {

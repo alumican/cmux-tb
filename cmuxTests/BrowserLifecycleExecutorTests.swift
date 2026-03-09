@@ -468,6 +468,82 @@ final class BrowserLifecycleExecutorTests: XCTestCase {
         XCTAssertTrue(plan.shouldRefreshHostedPresentation)
     }
 
+    func testHostedRefreshPlanIncludesFrameAndWebFrameReasonsForVisibleContent() {
+        let visibleSyncPlan = BrowserLifecycleExecutorVisibleSyncPlan(
+            shouldPreserveVisibleOnTransientGeometry: false,
+            shouldApplyPresentationApplicationPlan: true,
+            shouldApplyTransientRecoveryPlan: false,
+            shouldTrackVisibleEntry: true,
+            shouldAppendAnchorRefreshReason: false,
+            shouldRefreshHostedPresentation: false
+        )
+        let framePlan = BrowserLifecycleExecutorFrameApplicationPlan(
+            shouldUpdateFrame: true,
+            shouldNormalizeBounds: false,
+            expectedContainerBounds: CGRect(x: 0, y: 0, width: 100, height: 80)
+        )
+        let webFramePlan = BrowserLifecycleExecutorWebFrameNormalizationPlan(
+            shouldNormalizeWebFrame: true,
+            normalizedWebFrame: CGRect(x: 0, y: 0, width: 100, height: 80)
+        )
+        let presentationPlan = BrowserLifecycleExecutorPresentationApplicationPlan(
+            shouldHideContainer: false,
+            shouldRevealContainer: false,
+            paneTopChromeHeight: 32,
+            shouldShowSearchOverlay: true,
+            shouldShowDropZone: true,
+            shouldRefreshForReveal: false
+        )
+
+        let plan = BrowserLifecycleExecutor.hostedRefreshPlan(
+            visibleSyncPlan: visibleSyncPlan,
+            frameApplicationPlan: framePlan,
+            webFrameNormalizationPlan: webFramePlan,
+            presentationApplicationPlan: presentationPlan
+        )
+
+        XCTAssertEqual(plan.reasons, [.frame, .webFrame])
+        XCTAssertTrue(plan.shouldRefreshHostedPresentation)
+    }
+
+    func testHostedRefreshPlanStaysEmptyWhenContainerShouldHide() {
+        let visibleSyncPlan = BrowserLifecycleExecutorVisibleSyncPlan(
+            shouldPreserveVisibleOnTransientGeometry: false,
+            shouldApplyPresentationApplicationPlan: true,
+            shouldApplyTransientRecoveryPlan: false,
+            shouldTrackVisibleEntry: false,
+            shouldAppendAnchorRefreshReason: true,
+            shouldRefreshHostedPresentation: true
+        )
+        let framePlan = BrowserLifecycleExecutorFrameApplicationPlan(
+            shouldUpdateFrame: true,
+            shouldNormalizeBounds: true,
+            expectedContainerBounds: CGRect(x: 0, y: 0, width: 100, height: 80)
+        )
+        let webFramePlan = BrowserLifecycleExecutorWebFrameNormalizationPlan(
+            shouldNormalizeWebFrame: true,
+            normalizedWebFrame: CGRect(x: 0, y: 0, width: 100, height: 80)
+        )
+        let presentationPlan = BrowserLifecycleExecutorPresentationApplicationPlan(
+            shouldHideContainer: true,
+            shouldRevealContainer: false,
+            paneTopChromeHeight: 0,
+            shouldShowSearchOverlay: false,
+            shouldShowDropZone: false,
+            shouldRefreshForReveal: false
+        )
+
+        let plan = BrowserLifecycleExecutor.hostedRefreshPlan(
+            visibleSyncPlan: visibleSyncPlan,
+            frameApplicationPlan: framePlan,
+            webFrameNormalizationPlan: webFramePlan,
+            presentationApplicationPlan: presentationPlan
+        )
+
+        XCTAssertEqual(plan.reasons, [])
+        XCTAssertFalse(plan.shouldRefreshHostedPresentation)
+    }
+
     private func makeCurrentBrowserRecord(
         panelId: UUID = UUID(),
         workspaceId: UUID = UUID(),
