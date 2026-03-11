@@ -2350,14 +2350,9 @@ final class TerminalSurface: Identifiable, ObservableObject {
         case closing
         case closed
     }
-    private struct PortalHostLease {
-        let hostId: ObjectIdentifier
-        let inWindow: Bool
-        let area: CGFloat
-    }
     private var portalLifecycleState: PortalLifecycleState = .live
     private var portalLifecycleGeneration: UInt64 = 1
-    private var activePortalHostLease: PortalHostLease?
+    private var portalHostLeasing = PortalHostLeasingState()
     @Published var searchState: SearchState? = nil {
 	        didSet {
 	            if let searchState {
@@ -2449,81 +2444,49 @@ final class TerminalSurface: Identifiable, ObservableObject {
         return true
     }
 
-    private static let portalHostAreaThreshold: CGFloat = 4
-    private static let portalHostReplacementAreaGainRatio: CGFloat = 1.2
-
-    private static func portalHostArea(for bounds: CGRect) -> CGFloat {
-        max(0, bounds.width) * max(0, bounds.height)
-    }
-
-    private static func portalHostIsUsable(_ lease: PortalHostLease) -> Bool {
-        lease.inWindow && lease.area > portalHostAreaThreshold
-    }
-
     func claimPortalHost(
         hostId: ObjectIdentifier,
         inWindow: Bool,
         bounds: CGRect,
         reason: String
     ) -> Bool {
-        let next = PortalHostLease(
+        let outcome = portalHostLeasing.claim(
             hostId: hostId,
             inWindow: inWindow,
-            area: Self.portalHostArea(for: bounds)
+            bounds: bounds
         )
-
-        if let current = activePortalHostLease {
-            if current.hostId == hostId {
-                activePortalHostLease = next
-                return true
-            }
-
-            let currentUsable = Self.portalHostIsUsable(current)
-            let nextUsable = Self.portalHostIsUsable(next)
-            let shouldReplace =
-                !currentUsable ||
-                (nextUsable && next.area > (current.area * Self.portalHostReplacementAreaGainRatio))
-
-            if shouldReplace {
 #if DEBUG
+        if outcome.didAcquireOwnership {
+            if let replacedLease = outcome.replacedLease {
                 dlog(
                     "terminal.portal.host.claim surface=\(id.uuidString.prefix(5)) " +
                     "reason=\(reason) host=\(hostId) inWin=\(inWindow ? 1 : 0) " +
                     "size=\(String(format: "%.1fx%.1f", bounds.width, bounds.height)) " +
-                    "replacingHost=\(current.hostId) replacingInWin=\(current.inWindow ? 1 : 0) " +
-                    "replacingArea=\(String(format: "%.1f", current.area))"
+                    "replacingHost=\(replacedLease.hostId) replacingInWin=\(replacedLease.inWindow ? 1 : 0) " +
+                    "replacingArea=\(String(format: "%.1f", replacedLease.area))"
                 )
-#endif
-                activePortalHostLease = next
-                return true
+            } else {
+                dlog(
+                    "terminal.portal.host.claim surface=\(id.uuidString.prefix(5)) " +
+                    "reason=\(reason) host=\(hostId) inWin=\(inWindow ? 1 : 0) " +
+                    "size=\(String(format: "%.1fx%.1f", bounds.width, bounds.height)) replacingHost=nil"
+                )
             }
-
-#if DEBUG
+        } else if !outcome.accepted, let activeLease = outcome.activeLease {
             dlog(
                 "terminal.portal.host.skip surface=\(id.uuidString.prefix(5)) " +
                 "reason=\(reason) host=\(hostId) inWin=\(inWindow ? 1 : 0) " +
                 "size=\(String(format: "%.1fx%.1f", bounds.width, bounds.height)) " +
-                "ownerHost=\(current.hostId) ownerInWin=\(current.inWindow ? 1 : 0) " +
-                "ownerArea=\(String(format: "%.1f", current.area))"
+                "ownerHost=\(activeLease.hostId) ownerInWin=\(activeLease.inWindow ? 1 : 0) " +
+                "ownerArea=\(String(format: "%.1f", activeLease.area))"
             )
-#endif
-            return false
         }
-
-        activePortalHostLease = next
-#if DEBUG
-        dlog(
-            "terminal.portal.host.claim surface=\(id.uuidString.prefix(5)) " +
-            "reason=\(reason) host=\(hostId) inWin=\(inWindow ? 1 : 0) " +
-            "size=\(String(format: "%.1fx%.1f", bounds.width, bounds.height)) replacingHost=nil"
-        )
 #endif
-        return true
+        return outcome.accepted
     }
 
     func releasePortalHostIfOwned(hostId: ObjectIdentifier, reason: String) {
-        guard let current = activePortalHostLease, current.hostId == hostId else { return }
-        activePortalHostLease = nil
+        guard let current = portalHostLeasing.releaseIfOwned(hostId: hostId) else { return }
 #if DEBUG
         dlog(
             "terminal.portal.host.release surface=\(id.uuidString.prefix(5)) " +

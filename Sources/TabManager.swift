@@ -572,6 +572,7 @@ class TabManager: ObservableObject {
     @Published private(set) var pendingBackgroundWorkspaceLoadIds: Set<UUID> = []
     @Published private(set) var debugPinnedWorkspaceLoadIds: Set<UUID> = []
     @Published var workspaceEngineKind: WorkspaceEngineKind
+    @Published private(set) var workspaceGraphRevision: UInt64 = 0
 
     /// Global monotonically increasing counter for CMUX_PORT ordinal assignment.
     /// Static so port ranges don't overlap across multiple windows (each window has its own TabManager).
@@ -716,6 +717,18 @@ class TabManager: ObservableObject {
         workspace.onClosedBrowserPanel = nil
     }
 
+    private func wireWorkspaceGraphTracking(for workspace: Workspace) {
+        workspace.onGraphStateDidChange = { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.workspaceGraphRevision &+= 1
+            }
+        }
+    }
+
+    private func unwireWorkspaceGraphTracking(for workspace: Workspace) {
+        workspace.onGraphStateDidChange = nil
+    }
+
     var selectedWorkspace: Workspace? {
         guard let selectedTabId else { return nil }
         return tabs.first(where: { $0.id == selectedTabId })
@@ -835,6 +848,7 @@ class TabManager: ObservableObject {
             configTemplate: inheritedConfig
         )
         wireClosedBrowserTracking(for: newWorkspace)
+        wireWorkspaceGraphTracking(for: newWorkspace)
         let insertIndex = newTabInsertIndex(placementOverride: placementOverride)
         if insertIndex >= 0 && insertIndex <= tabs.count {
             tabs.insert(newWorkspace, at: insertIndex)
@@ -1280,6 +1294,7 @@ class TabManager: ObservableObject {
 
         AppDelegate.shared?.notificationStore?.clearNotifications(forTabId: workspace.id)
         unwireClosedBrowserTracking(for: workspace)
+        unwireWorkspaceGraphTracking(for: workspace)
         workspace.teardownAllPanels()
 
         tabs.remove(at: index)
@@ -1302,6 +1317,7 @@ class TabManager: ObservableObject {
 
         let removed = tabs.remove(at: index)
         unwireClosedBrowserTracking(for: removed)
+        unwireWorkspaceGraphTracking(for: removed)
         lastFocusedPanelByTab.removeValue(forKey: removed.id)
 
         if tabs.isEmpty {
@@ -1321,6 +1337,7 @@ class TabManager: ObservableObject {
     /// Attach an existing workspace to this window.
     func attachWorkspace(_ workspace: Workspace, at index: Int? = nil, select: Bool = true) {
         wireClosedBrowserTracking(for: workspace)
+        wireWorkspaceGraphTracking(for: workspace)
         let insertIndex: Int = {
             guard let index else { return tabs.count }
             return max(0, min(index, tabs.count))
@@ -2382,6 +2399,9 @@ class TabManager: ObservableObject {
             foundSplit: &foundSplit,
             allSucceeded: &allSucceeded
         )
+        if foundSplit {
+            tab.markGraphStateChanged(reason: "equalizeSplits")
+        }
         return foundSplit && allSucceeded
     }
 
@@ -3847,6 +3867,7 @@ extension TabManager {
     func restoreSessionSnapshot(_ snapshot: SessionTabManagerSnapshot) {
         for tab in tabs {
             unwireClosedBrowserTracking(for: tab)
+            unwireWorkspaceGraphTracking(for: tab)
         }
 
         // Clear non-@Published state without touching tabs/selectedTabId yet.
@@ -3878,6 +3899,7 @@ extension TabManager {
             )
             workspace.restoreSessionSnapshot(workspaceSnapshot)
             wireClosedBrowserTracking(for: workspace)
+            wireWorkspaceGraphTracking(for: workspace)
             newTabs.append(workspace)
         }
 
@@ -3886,6 +3908,7 @@ extension TabManager {
             Self.nextPortOrdinal += 1
             let fallback = Workspace(title: "Terminal 1", portOrdinal: ordinal)
             wireClosedBrowserTracking(for: fallback)
+            wireWorkspaceGraphTracking(for: fallback)
             newTabs.append(fallback)
         }
 

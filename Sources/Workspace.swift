@@ -946,6 +946,7 @@ final class Workspace: Identifiable, ObservableObject {
 
     /// Callback used by TabManager to capture recently closed browser panels for Cmd+Shift+T restore.
     var onClosedBrowserPanel: ((ClosedBrowserPanelRestoreSnapshot) -> Void)?
+    var onGraphStateDidChange: ((String) -> Void)?
 
 
     // Closing tabs mutates split layout immediately; terminal views handle their own AppKit
@@ -1361,6 +1362,38 @@ final class Workspace: Identifiable, ObservableObject {
     func panel(for surfaceId: TabID) -> (any Panel)? {
         guard let panelId = panelIdFromSurfaceId(surfaceId) else { return nil }
         return panels[panelId]
+    }
+
+    func graphSnapshot() -> WorkspaceGraphSnapshot {
+        let tree = bonsplitController.treeSnapshot()
+        let layoutSnapshot = bonsplitController.layoutSnapshot()
+        var orderedPaneIds = SidebarBranchOrdering.orderedPaneIds(tree: tree).compactMap(UUID.init(uuidString:))
+        for paneId in bonsplitController.allPaneIds.map(\.id) where !orderedPaneIds.contains(paneId) {
+            orderedPaneIds.append(paneId)
+        }
+
+        let paneStates = orderedPaneIds.map { paneUUID in
+            let paneId = PaneID(id: paneUUID)
+            return WorkspacePaneGraphState(
+                paneId: paneUUID,
+                panelIds: bonsplitController.tabs(inPane: paneId).compactMap { panelIdFromSurfaceId($0.id) },
+                selectedPanelId: bonsplitController.selectedTab(inPane: paneId).flatMap { panelIdFromSurfaceId($0.id) }
+            )
+        }
+
+        return WorkspaceGraphSnapshot(
+            workspaceId: id,
+            paneTree: tree,
+            layoutSnapshot: layoutSnapshot,
+            panes: paneStates,
+            focusedPaneId: bonsplitController.focusedPaneId?.id,
+            focusedPanelId: focusedPanelId,
+            zoomedPaneId: bonsplitController.zoomedPaneId?.id
+        )
+    }
+
+    func markGraphStateChanged(reason: String) {
+        onGraphStateDidChange?(reason)
     }
 
     func terminalPanel(for panelId: UUID) -> TerminalPanel? {
@@ -2079,6 +2112,8 @@ final class Workspace: Identifiable, ObservableObject {
             )
         }
 
+        markGraphStateChanged(reason: "newTerminalSplit")
+
         return newPanel
     }
 
@@ -2136,6 +2171,7 @@ final class Workspace: Identifiable, ObservableObject {
             newPanel.focus()
             applyTabSelection(tabId: newTabId, inPane: paneId)
         }
+        markGraphStateChanged(reason: "newTerminalSurface")
         return newPanel
     }
 
@@ -2206,6 +2242,7 @@ final class Workspace: Identifiable, ObservableObject {
         }
 
         installBrowserPanelSubscription(browserPanel)
+        markGraphStateChanged(reason: "newBrowserSplit")
 
         return browserPanel
     }
@@ -2263,6 +2300,7 @@ final class Workspace: Identifiable, ObservableObject {
         }
 
         installBrowserPanelSubscription(browserPanel)
+        markGraphStateChanged(reason: "newBrowserSurface")
 
         return browserPanel
     }
@@ -2335,6 +2373,7 @@ final class Workspace: Identifiable, ObservableObject {
         }
 
         installMarkdownPanelSubscription(markdownPanel)
+        markGraphStateChanged(reason: "newMarkdownSplit")
 
         return markdownPanel
     }
@@ -2376,6 +2415,7 @@ final class Workspace: Identifiable, ObservableObject {
         }
 
         installMarkdownPanelSubscription(markdownPanel)
+        markGraphStateChanged(reason: "newMarkdownSurface")
 
         return markdownPanel
     }
@@ -3287,7 +3327,11 @@ final class Workspace: Identifiable, ObservableObject {
 
     @discardableResult
     func clearSplitZoom() -> Bool {
-        bonsplitController.clearPaneZoom()
+        let didClear = bonsplitController.clearPaneZoom()
+        if didClear {
+            markGraphStateChanged(reason: "clearSplitZoom")
+        }
+        return didClear
     }
 
     @discardableResult
@@ -3314,6 +3358,7 @@ final class Workspace: Identifiable, ObservableObject {
                 scheduleBrowserSplitZoomExitFocusReassert(panelId: panelId, remainingPasses: 4)
             }
         }
+        markGraphStateChanged(reason: "toggleSplitZoom")
         return true
     }
 
@@ -4662,10 +4707,12 @@ extension Workspace: BonsplitDelegate {
         if !isDetaching {
             scheduleFocusReconcile()
         }
+        markGraphStateChanged(reason: "didCloseTab")
     }
 
     func splitTabBar(_ controller: BonsplitController, didSelectTab tab: Bonsplit.Tab, inPane pane: PaneID) {
         applyTabSelection(tabId: tab.id, inPane: pane)
+        markGraphStateChanged(reason: "didSelectTab")
     }
 
     func splitTabBar(_ controller: BonsplitController, didMoveTab tab: Bonsplit.Tab, fromPane source: PaneID, toPane destination: PaneID) {
@@ -4720,6 +4767,7 @@ extension Workspace: BonsplitDelegate {
         if !isDetachingCloseTransaction {
             scheduleFocusReconcile()
         }
+        markGraphStateChanged(reason: "didMoveTab")
     }
 
     func splitTabBar(_ controller: BonsplitController, didFocusPane pane: PaneID) {
@@ -4737,6 +4785,7 @@ extension Workspace: BonsplitDelegate {
            let terminalPanel = panels[panelId] as? TerminalPanel {
             terminalPanel.applyWindowBackgroundIfActive()
         }
+        markGraphStateChanged(reason: "didFocusPane")
     }
 
     func splitTabBar(_ controller: BonsplitController, didClosePane paneId: PaneID) {
@@ -4795,6 +4844,7 @@ extension Workspace: BonsplitDelegate {
             "remainingPanels=\(panels.count) remainingPanes=\(bonsplitController.allPaneIds.count)"
         )
 #endif
+        markGraphStateChanged(reason: "didClosePane")
     }
 
     func splitTabBar(_ controller: BonsplitController, shouldClosePane pane: PaneID) -> Bool {
@@ -4845,6 +4895,7 @@ extension Workspace: BonsplitDelegate {
             normalizePinnedTabs(in: originalPane)
             normalizePinnedTabs(in: newPane)
             scheduleTerminalGeometryReconcile()
+            markGraphStateChanged(reason: "didSplitPaneProgrammatic")
             return
         }
 
@@ -4926,6 +4977,7 @@ extension Workspace: BonsplitDelegate {
             normalizePinnedTabs(in: originalPane)
             normalizePinnedTabs(in: newPane)
             scheduleTerminalGeometryReconcile()
+            markGraphStateChanged(reason: "didSplitPaneDrag")
             return
         }
 
@@ -4989,6 +5041,7 @@ extension Workspace: BonsplitDelegate {
             }
             self.scheduleTerminalGeometryReconcile()
             self.scheduleFocusReconcile()
+            self.markGraphStateChanged(reason: "didSplitPaneAutoCreate")
         }
     }
 
@@ -5052,6 +5105,7 @@ extension Workspace: BonsplitDelegate {
         if !isDetachingCloseTransaction {
             scheduleFocusReconcile()
         }
+        markGraphStateChanged(reason: "didChangeGeometry")
     }
 
     // No post-close polling refresh loop: we rely on view invariants and Ghostty's wakeups.

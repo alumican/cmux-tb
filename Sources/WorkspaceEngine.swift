@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import Bonsplit
 
 enum WorkspaceEngineKind: String, CaseIterable, Identifiable, Sendable {
     case legacy
@@ -47,22 +48,104 @@ enum WorkspaceEngineSettings {
     }
 }
 
+struct WorkspacePaneGraphState: Equatable, Sendable {
+    let paneId: UUID
+    let panelIds: [UUID]
+    let selectedPanelId: UUID?
+}
+
+struct WorkspaceGraphSnapshot: Equatable, Sendable {
+    let workspaceId: UUID
+    let paneTree: ExternalTreeNode
+    let layoutSnapshot: LayoutSnapshot
+    let panes: [WorkspacePaneGraphState]
+    let focusedPaneId: UUID?
+    let focusedPanelId: UUID?
+    let zoomedPaneId: UUID?
+
+    var isSplit: Bool {
+        panes.count > 1
+    }
+
+    var splitZoomRenderIdentity: String {
+        zoomedPaneId.map { "zoom:\($0.uuidString)" } ?? "unzoomed"
+    }
+
+    func paneState(for paneId: UUID) -> WorkspacePaneGraphState? {
+        panes.first(where: { $0.paneId == paneId })
+    }
+
+    func selectedPanelId(inPane paneId: PaneID) -> UUID? {
+        paneState(for: paneId.id)?.selectedPanelId
+    }
+
+    func merged(with live: WorkspaceGraphSnapshot) -> WorkspaceGraphSnapshot {
+        let previousPaneStatesById = Dictionary(uniqueKeysWithValues: panes.map { ($0.paneId, $0) })
+        let mergedPanes = live.panes.map { pane in
+            guard pane.selectedPanelId == nil,
+                  let previousPane = previousPaneStatesById[pane.paneId],
+                  let previousSelectedPanelId = previousPane.selectedPanelId,
+                  pane.panelIds.contains(previousSelectedPanelId) else {
+                return pane
+            }
+            return WorkspacePaneGraphState(
+                paneId: pane.paneId,
+                panelIds: pane.panelIds,
+                selectedPanelId: previousSelectedPanelId
+            )
+        }
+        let mergedPaneStatesById = Dictionary(uniqueKeysWithValues: mergedPanes.map { ($0.paneId, $0) })
+        let allPanelIds = Set(mergedPanes.flatMap(\.panelIds))
+        let mergedFocusedPaneId = live.focusedPaneId ?? {
+            guard let previousFocusedPaneId = focusedPaneId,
+                  mergedPaneStatesById[previousFocusedPaneId] != nil else {
+                return nil
+            }
+            return previousFocusedPaneId
+        }()
+        let mergedFocusedPanelId = live.focusedPanelId ?? {
+            if let mergedFocusedPaneId,
+               let selectedPanelId = mergedPaneStatesById[mergedFocusedPaneId]?.selectedPanelId {
+                return selectedPanelId
+            }
+            guard let previousFocusedPanelId = focusedPanelId,
+                  allPanelIds.contains(previousFocusedPanelId) else {
+                return nil
+            }
+            return previousFocusedPanelId
+        }()
+
+        return WorkspaceGraphSnapshot(
+            workspaceId: live.workspaceId,
+            paneTree: live.paneTree,
+            layoutSnapshot: live.layoutSnapshot,
+            panes: mergedPanes,
+            focusedPaneId: mergedFocusedPaneId,
+            focusedPanelId: mergedFocusedPanelId,
+            zoomedPaneId: live.zoomedPaneId
+        )
+    }
+}
+
 struct WorkspaceEngineRenderInputs: Equatable {
     let orderedWorkspaceIds: [UUID]
     let selectedWorkspaceId: UUID?
     let retainedWorkspaceIds: Set<UUID>
     let isWorkspaceCycleHot: Bool
+    let workspaceSnapshotsById: [UUID: WorkspaceGraphSnapshot]
 
     init(
         orderedWorkspaceIds: [UUID],
         selectedWorkspaceId: UUID?,
         retainedWorkspaceIds: Set<UUID>,
-        isWorkspaceCycleHot: Bool
+        isWorkspaceCycleHot: Bool,
+        workspaceSnapshotsById: [UUID: WorkspaceGraphSnapshot]
     ) {
         self.orderedWorkspaceIds = orderedWorkspaceIds
         self.selectedWorkspaceId = selectedWorkspaceId
         self.retainedWorkspaceIds = retainedWorkspaceIds
         self.isWorkspaceCycleHot = isWorkspaceCycleHot
+        self.workspaceSnapshotsById = workspaceSnapshotsById
     }
 
     @MainActor
@@ -71,7 +154,10 @@ struct WorkspaceEngineRenderInputs: Equatable {
             orderedWorkspaceIds: tabManager.tabs.map(\.id),
             selectedWorkspaceId: selectedWorkspaceId ?? tabManager.selectedTabId,
             retainedWorkspaceIds: tabManager.pendingBackgroundWorkspaceLoadIds.union(tabManager.debugPinnedWorkspaceLoadIds),
-            isWorkspaceCycleHot: tabManager.isWorkspaceCycleHot
+            isWorkspaceCycleHot: tabManager.isWorkspaceCycleHot,
+            workspaceSnapshotsById: Dictionary(
+                uniqueKeysWithValues: tabManager.tabs.map { ($0.id, $0.graphSnapshot()) }
+            )
         )
     }
 }
@@ -99,6 +185,7 @@ protocol WindowWorkspaceEngine: AnyObject {
     ) -> WorkspaceEngineSelectionTransition
     func reconcile(inputs: WorkspaceEngineRenderInputs)
     func completeWorkspaceHandoff(inputs: WorkspaceEngineRenderInputs)
+    func workspaceSnapshot(for workspaceId: UUID) -> WorkspaceGraphSnapshot?
 }
 
 @MainActor
@@ -123,6 +210,10 @@ final class WindowWorkspaceEngineStore: ObservableObject {
 
     func setHandoffCompletionHandler(_ handler: @escaping (UUID?, String) -> Void) {
         handoffCompletionHandler = handler
+    }
+
+    func workspaceSnapshot(for workspaceId: UUID) -> WorkspaceGraphSnapshot? {
+        engine.workspaceSnapshot(for: workspaceId)
     }
 
     func reconfigureIfNeeded(kind newKind: WorkspaceEngineKind) {
@@ -324,6 +415,10 @@ private final class LegacyWindowWorkspaceEngine: WindowWorkspaceEngine {
             inputs: inputs
         )
     }
+
+    func workspaceSnapshot(for workspaceId: UUID) -> WorkspaceGraphSnapshot? {
+        nil
+    }
 }
 
 private struct WindowGraphState: Equatable {
@@ -337,11 +432,28 @@ private struct WindowGraphState: Equatable {
     var selectedWorkspaceId: UUID?
     var retiringWorkspaceId: UUID?
     var mountedWorkspaceIds: [UUID] = []
+    var workspaceSnapshotsById: [UUID: WorkspaceGraphSnapshot] = [:]
 
     @discardableResult
     mutating func apply(_ action: Action) -> WorkspaceEngineSelectionTransition? {
+        func reconcileWorkspaceSnapshots(_ liveSnapshotsById: [UUID: WorkspaceGraphSnapshot]) {
+            var nextSnapshotsById: [UUID: WorkspaceGraphSnapshot] = [:]
+            nextSnapshotsById.reserveCapacity(liveSnapshotsById.count)
+
+            for (workspaceId, liveSnapshot) in liveSnapshotsById {
+                if let previousSnapshot = workspaceSnapshotsById[workspaceId] {
+                    nextSnapshotsById[workspaceId] = previousSnapshot.merged(with: liveSnapshot)
+                } else {
+                    nextSnapshotsById[workspaceId] = liveSnapshot
+                }
+            }
+
+            workspaceSnapshotsById = nextSnapshotsById
+        }
+
         switch action {
         case .bootstrap(let inputs):
+            reconcileWorkspaceSnapshots(inputs.workspaceSnapshotsById)
             selectedWorkspaceId = inputs.selectedWorkspaceId
             retiringWorkspaceId = nil
             mountedWorkspaceIds = computeMountedWorkspaceIds(
@@ -352,6 +464,7 @@ private struct WindowGraphState: Equatable {
             return nil
 
         case .selectWorkspace(let nextSelectedWorkspaceId, let inputs):
+            reconcileWorkspaceSnapshots(inputs.workspaceSnapshotsById)
             let previousSelectedWorkspaceId = selectedWorkspaceId
             selectedWorkspaceId = nextSelectedWorkspaceId
 
@@ -376,6 +489,7 @@ private struct WindowGraphState: Equatable {
             return .noHandoff
 
         case .reconcile(let inputs):
+            reconcileWorkspaceSnapshots(inputs.workspaceSnapshotsById)
             selectedWorkspaceId = inputs.selectedWorkspaceId
             if let retiringWorkspaceId,
                !inputs.orderedWorkspaceIds.contains(retiringWorkspaceId) {
@@ -389,6 +503,7 @@ private struct WindowGraphState: Equatable {
             return nil
 
         case .completeWorkspaceHandoff(let inputs):
+            reconcileWorkspaceSnapshots(inputs.workspaceSnapshotsById)
             selectedWorkspaceId = inputs.selectedWorkspaceId
             retiringWorkspaceId = nil
             mountedWorkspaceIds = computeMountedWorkspaceIds(
@@ -431,5 +546,9 @@ private final class GraphWindowWorkspaceEngine: WindowWorkspaceEngine {
 
     func completeWorkspaceHandoff(inputs: WorkspaceEngineRenderInputs) {
         _ = graphState.apply(.completeWorkspaceHandoff(inputs))
+    }
+
+    func workspaceSnapshot(for workspaceId: UUID) -> WorkspaceGraphSnapshot? {
+        graphState.workspaceSnapshotsById[workspaceId]
     }
 }

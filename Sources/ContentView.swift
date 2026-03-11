@@ -1913,6 +1913,7 @@ struct ContentView: View {
                     let isSelectedWorkspace = selectedWorkspaceId == tab.id
                     let isRetiringWorkspace = retiringWorkspaceId == tab.id
                     let shouldPrimeInBackground = tabManager.pendingBackgroundWorkspaceLoadIds.contains(tab.id)
+                    let workspaceGraphSnapshot = workspaceEngineStore.workspaceSnapshot(for: tab.id)
                     // Keep the retiring workspace visible during handoff, but never input-active.
                     // Allowing both selected+retiring workspaces to be input-active lets the
                     // old workspace steal first responder (notably with WKWebView), which can
@@ -1922,6 +1923,7 @@ struct ContentView: View {
                     let portalPriority = isSelectedWorkspace ? 2 : (isRetiringWorkspace ? 1 : 0)
                     WorkspaceContentView(
                         workspace: tab,
+                        workspaceGraphSnapshot: workspaceGraphSnapshot,
                         isWorkspaceVisible: isVisible,
                         isWorkspaceInputActive: isInputActive,
                         workspacePortalPriority: portalPriority,
@@ -2385,6 +2387,10 @@ struct ContentView: View {
                     lastSidebarSelectionIndex = nil
                 }
             }
+        })
+
+        view = AnyView(view.onReceive(tabManager.$workspaceGraphRevision) { _ in
+            workspaceEngineStore.reconcile(reason: "workspace_graph_changed")
         })
 
         view = AnyView(view.onReceive(NotificationCenter.default.publisher(for: SidebarDragLifecycleNotification.stateDidChange)) { notification in

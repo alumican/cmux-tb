@@ -50,6 +50,42 @@ final class BrowserPaneNavigationKeybindUITests: XCTestCase {
         )
     }
 
+    func testGraphV1CmdCtrlHMovesLeftWhenWebViewFocused() {
+        let app = XCUIApplication()
+        app.launchEnvironment["CMUX_WORKSPACE_ENGINE"] = "graph-v1"
+        app.launchEnvironment["CMUX_UI_TEST_GOTO_SPLIT_SETUP"] = "1"
+        app.launchEnvironment["CMUX_UI_TEST_GOTO_SPLIT_PATH"] = dataPath
+        app.launchEnvironment["CMUX_UI_TEST_FOCUS_SHORTCUTS"] = "1"
+        app.launchEnvironment["CMUX_SOCKET_PATH"] = socketPath
+        launchAndEnsureForeground(app)
+
+        XCTAssertTrue(
+            waitForData(keys: ["terminalPaneId", "browserPaneId", "webViewFocused"], timeout: 10.0),
+            "Expected goto_split setup data to be written"
+        )
+
+        guard let setup = loadData() else {
+            XCTFail("Missing goto_split setup data")
+            return
+        }
+
+        XCTAssertEqual(setup["webViewFocused"], "true", "Expected WKWebView to be first responder for this test")
+
+        guard let expectedTerminalPaneId = setup["terminalPaneId"] else {
+            XCTFail("Missing terminalPaneId in goto_split setup data")
+            return
+        }
+
+        app.typeKey("h", modifierFlags: [.command, .control])
+
+        XCTAssertTrue(
+            waitForDataMatch(timeout: 5.0) { data in
+                data["lastMoveDirection"] == "left" && data["focusedPaneId"] == expectedTerminalPaneId
+            },
+            "Expected Cmd+Ctrl+H to move focus to left pane (terminal)"
+        )
+    }
+
     func testCmdCtrlHMovesLeftWhenWebViewFocusedUsingGhosttyConfigKeybind() {
         // Write a test Ghostty config in the preferred macOS location so GhosttyKit loads it at app startup.
         let fileManager = FileManager.default
