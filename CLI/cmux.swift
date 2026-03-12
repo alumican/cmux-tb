@@ -457,11 +457,171 @@ private enum CLISocketPathSource {
     case implicitDefault
 }
 
+private func cliVersionSocketTimeoutSeconds(
+    processEnv: [String: String] = ProcessInfo.processInfo.environment
+) -> TimeInterval {
+    if let raw = processEnv["CMUXTERM_CLI_VERSION_TIMEOUT_SEC"],
+       let seconds = Double(raw),
+       seconds > 0 {
+        return seconds
+    }
+    return 2.5
+}
+
+private func cliDefaultResponseTimeoutSeconds(
+    processEnv: [String: String] = ProcessInfo.processInfo.environment
+) -> TimeInterval {
+    if let raw = processEnv["CMUXTERM_CLI_RESPONSE_TIMEOUT_SEC"],
+       let seconds = Double(raw),
+       seconds > 0 {
+        return seconds
+    }
+    return 15.0
+}
+
+private func cliUnixSocketStat(_ path: String) -> stat? {
+    var st = stat()
+    guard lstat(path, &st) == 0 else { return nil }
+    guard (st.st_mode & mode_t(S_IFMT)) == mode_t(S_IFSOCK) else { return nil }
+    return st
+}
+
+private func cliIsUnixSocketFile(_ path: String) -> Bool {
+    cliUnixSocketStat(path) != nil
+}
+
+fileprivate struct SocketClientConfiguration {
+    let connectRetryWindowSeconds: TimeInterval
+    let connectAttemptTimeoutSeconds: TimeInterval
+    let responseTimeoutSeconds: TimeInterval
+
+    static func defaultConfig(
+        processEnv: [String: String] = ProcessInfo.processInfo.environment
+    ) -> SocketClientConfiguration {
+        SocketClientConfiguration(
+            connectRetryWindowSeconds: 2.0,
+            connectAttemptTimeoutSeconds: 2.0,
+            responseTimeoutSeconds: cliDefaultResponseTimeoutSeconds(processEnv: processEnv)
+        )
+    }
+
+    static func versionQuery(
+        processEnv: [String: String] = ProcessInfo.processInfo.environment
+    ) -> SocketClientConfiguration {
+        let timeout = cliVersionSocketTimeoutSeconds(processEnv: processEnv)
+        return SocketClientConfiguration(
+            connectRetryWindowSeconds: timeout,
+            connectAttemptTimeoutSeconds: timeout,
+            responseTimeoutSeconds: timeout
+        )
+    }
+}
+
+private enum UnixSocketConnector {
+    private static let inProgressErrnos: Set<Int32> = [EINPROGRESS, EAGAIN, EWOULDBLOCK, EINTR]
+
+    static func probe(path: String, timeoutSeconds: TimeInterval) -> Int32 {
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { return errno }
+        defer { Darwin.close(fd) }
+        return connect(fd: fd, path: path, timeoutSeconds: timeoutSeconds)
+    }
+
+    static func connect(fd: Int32, path: String, timeoutSeconds: TimeInterval) -> Int32 {
+        let flags = fcntl(fd, F_GETFL)
+        guard flags >= 0 else { return errno }
+        guard fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0 else { return errno }
+        defer { _ = fcntl(fd, F_SETFL, flags) }
+
+        let result = withSocketAddress(path: path) { sockaddrPtr, sockaddrLen in
+            Darwin.connect(fd, sockaddrPtr, sockaddrLen)
+        }
+        if result == 0 {
+            return 0
+        }
+
+        let connectErrno = errno
+        guard inProgressErrnos.contains(connectErrno) else {
+            return connectErrno
+        }
+
+        let deadline = Date().addingTimeInterval(max(0, timeoutSeconds))
+        let writableMask = Int16(POLLOUT)
+
+        while true {
+            let remaining = deadline.timeIntervalSinceNow
+            if remaining <= 0 {
+                return ETIMEDOUT
+            }
+
+            let timeoutMs = Int32(min(Double(Int32.max), ceil(remaining * 1000.0)))
+            var pollFD = pollfd(fd: fd, events: writableMask, revents: 0)
+            let ready = poll(&pollFD, 1, max(1, timeoutMs))
+            if ready > 0 {
+                var socketError: Int32 = 0
+                var socketErrorLength = socklen_t(MemoryLayout<Int32>.size)
+                if getsockopt(fd, SOL_SOCKET, SO_ERROR, &socketError, &socketErrorLength) < 0 {
+                    return errno
+                }
+                return socketError
+            }
+            if ready == 0 {
+                return ETIMEDOUT
+            }
+            if errno == EINTR {
+                continue
+            }
+            return errno
+        }
+    }
+
+    private static func withSocketAddress<T>(
+        path: String,
+        _ body: (UnsafePointer<sockaddr>, socklen_t) -> T
+    ) -> T {
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let maxLength = MemoryLayout.size(ofValue: addr.sun_path)
+        path.withCString { ptr in
+            withUnsafeMutablePointer(to: &addr.sun_path) { pathPtr in
+                let buf = UnsafeMutableRawPointer(pathPtr).assumingMemoryBound(to: CChar.self)
+                strncpy(buf, ptr, maxLength - 1)
+            }
+        }
+
+        return withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
+                body(sockaddrPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+    }
+}
+
+private enum CLIStaleSocketFileCleaner {
+    private static let minimumAgeSeconds: TimeInterval = 5.0
+
+    @discardableResult
+    static func cleanupIfNeeded(path: String, connectErrno: Int32) -> Bool {
+        guard connectErrno == ECONNREFUSED else { return false }
+        guard path.hasPrefix("/tmp/cmux"), path.hasSuffix(".sock") else { return false }
+        guard let st = cliUnixSocketStat(path) else { return false }
+        guard st.st_uid == getuid() else { return false }
+
+        let modified = TimeInterval(st.st_mtimespec.tv_sec) + TimeInterval(st.st_mtimespec.tv_nsec) / 1_000_000_000
+        guard Date().timeIntervalSince1970 - modified >= minimumAgeSeconds else {
+            return false
+        }
+
+        return unlink(path) == 0
+    }
+}
+
 private enum CLISocketPathResolver {
     static let defaultSocketPath = "/tmp/cmux.sock"
     private static let fallbackSocketPath = "/tmp/cmux-debug.sock"
     private static let stagingSocketPath = "/tmp/cmux-staging.sock"
     private static let lastSocketPathFile = "/tmp/cmux-last-socket-path"
+    private static let connectProbeTimeoutSeconds: TimeInterval = 0.15
 
     static func resolve(
         requestedPath: String,
@@ -537,32 +697,17 @@ private enum CLISocketPathResolver {
     }
 
     private static func isSocketFile(_ path: String) -> Bool {
-        var st = stat()
-        return lstat(path, &st) == 0 && (st.st_mode & mode_t(S_IFMT)) == mode_t(S_IFSOCK)
+        cliIsUnixSocketFile(path)
     }
 
     private static func canConnect(to path: String) -> Bool {
         guard isSocketFile(path) else { return false }
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else { return false }
-        defer { Darwin.close(fd) }
-
-        var addr = sockaddr_un()
-        addr.sun_family = sa_family_t(AF_UNIX)
-        let maxLength = MemoryLayout.size(ofValue: addr.sun_path)
-        path.withCString { ptr in
-            withUnsafeMutablePointer(to: &addr.sun_path) { pathPtr in
-                let buf = UnsafeMutableRawPointer(pathPtr).assumingMemoryBound(to: CChar.self)
-                strncpy(buf, ptr, maxLength - 1)
-            }
+        let connectErrno = UnixSocketConnector.probe(path: path, timeoutSeconds: connectProbeTimeoutSeconds)
+        if connectErrno == 0 {
+            return true
         }
-
-        let result = withUnsafePointer(to: &addr) { ptr in
-            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
-                Darwin.connect(fd, sockaddrPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
-            }
-        }
-        return result == 0
+        _ = CLIStaleSocketFileCleaner.cleanupIfNeeded(path: path, connectErrno: connectErrno)
+        return false
     }
 
     private static func sanitizeTagSlug(_ raw: String) -> String {
@@ -593,36 +738,28 @@ private enum CLISocketPathResolver {
     }
 }
 
-final class SocketClient {
+fileprivate final class SocketClient {
     private let path: String
+    private let configuration: SocketClientConfiguration
     private var socketFD: Int32 = -1
-    private static let connectRetryWindowSeconds: TimeInterval = 2.0
     private static let connectRetryIntervalSeconds: TimeInterval = 0.1
     private static let retriableConnectErrnos: Set<Int32> = [
         ENOENT,
         ECONNREFUSED,
         EAGAIN,
-        EINTR
+        EINTR,
+        ETIMEDOUT
     ]
-    private static let defaultResponseTimeoutSeconds: TimeInterval = 15.0
-    private static let responseTimeoutSeconds: TimeInterval = {
-        let env = ProcessInfo.processInfo.environment
-        if let raw = env["CMUXTERM_CLI_RESPONSE_TIMEOUT_SEC"],
-           let seconds = Double(raw),
-           seconds > 0 {
-            return seconds
-        }
-        return defaultResponseTimeoutSeconds
-    }()
 
-    init(path: String) {
+    init(path: String, configuration: SocketClientConfiguration = .defaultConfig()) {
         self.path = path
+        self.configuration = configuration
     }
 
     func connect() throws {
         if socketFD >= 0 { return }
 
-        let deadline = Date().addingTimeInterval(Self.connectRetryWindowSeconds)
+        let deadline = Date().addingTimeInterval(configuration.connectRetryWindowSeconds)
         var lastError: CLIError?
 
         while true {
@@ -649,26 +786,16 @@ final class SocketClient {
                 throw CLIError(message: "Failed to create socket")
             }
 
-            var addr = sockaddr_un()
-            addr.sun_family = sa_family_t(AF_UNIX)
-            let maxLength = MemoryLayout.size(ofValue: addr.sun_path)
-            path.withCString { ptr in
-                withUnsafeMutablePointer(to: &addr.sun_path) { pathPtr in
-                    let buf = UnsafeMutableRawPointer(pathPtr).assumingMemoryBound(to: CChar.self)
-                    strncpy(buf, ptr, maxLength - 1)
-                }
-            }
-
-            let result = withUnsafePointer(to: &addr) { ptr in
-                ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
-                    Darwin.connect(socketFD, sockaddrPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
-                }
-            }
-            if result == 0 {
+            let remaining = max(0, deadline.timeIntervalSinceNow)
+            let connectErrno = UnixSocketConnector.connect(
+                fd: socketFD,
+                path: path,
+                timeoutSeconds: min(configuration.connectAttemptTimeoutSeconds, remaining)
+            )
+            if connectErrno == 0 {
                 return
             }
 
-            let connectErrno = errno
             Darwin.close(socketFD)
             socketFD = -1
 
@@ -680,6 +807,7 @@ final class SocketClient {
                 Thread.sleep(forTimeInterval: Self.connectRetryIntervalSeconds)
                 continue
             }
+            _ = CLIStaleSocketFileCleaner.cleanupIfNeeded(path: path, connectErrno: connectErrno)
             throw error
         }
 
@@ -717,7 +845,7 @@ final class SocketClient {
                 if sawNewline {
                     break
                 }
-                if Date().timeIntervalSince(start) > Self.responseTimeoutSeconds {
+                if Date().timeIntervalSince(start) > configuration.responseTimeoutSeconds {
                     throw CLIError(message: "Command timed out")
                 }
                 continue
@@ -857,7 +985,14 @@ struct CMUXCLI {
                 continue
             }
             if arg == "-v" || arg == "--version" {
-                print(versionSummary())
+                print(
+                    resolvedVersionSummary(
+                        requestedSocketPath: socketPath,
+                        socketPathSource: socketPathSource,
+                        explicitPassword: socketPasswordArg,
+                        processEnv: processEnv
+                    )
+                )
                 return
             }
             if arg == "-h" || arg == "--help" {
@@ -874,6 +1009,18 @@ struct CMUXCLI {
 
         let command = args[index]
         let commandArgs = Array(args[(index + 1)...])
+        if command == "version" {
+            print(
+                resolvedVersionSummary(
+                    requestedSocketPath: socketPath,
+                    socketPathSource: socketPathSource,
+                    explicitPassword: socketPasswordArg,
+                    processEnv: processEnv
+                )
+            )
+            return
+        }
+
         let cliTelemetry = CLISocketSentryTelemetry(
             command: command,
             commandArgs: commandArgs,
@@ -885,11 +1032,6 @@ struct CMUXCLI {
             source: socketPathSource,
             environment: processEnv
         )
-
-        if command == "version" {
-            print(versionSummary())
-            return
-        }
 
         // If the argument looks like a path (not a known command), open a workspace there.
         if looksLikePath(command) {
@@ -8016,7 +8158,10 @@ struct CMUXCLI {
     }
 
     private func versionSummary() -> String {
-        let info = resolvedVersionInfo()
+        versionSummary(from: resolvedVersionInfo())
+    }
+
+    private func versionSummary(from info: [String: String]) -> String {
         let commit = info["CMUXCommit"].flatMap { normalizedCommitHash($0) }
         let baseSummary: String
         if let version = info["CFBundleShortVersionString"], let build = info["CFBundleVersion"] {
@@ -8030,6 +8175,51 @@ struct CMUXCLI {
         }
         guard let commit else { return baseSummary }
         return "\(baseSummary) [\(commit)]"
+    }
+
+    private func resolvedVersionSummary(
+        requestedSocketPath: String,
+        socketPathSource: CLISocketPathSource,
+        explicitPassword: String?,
+        processEnv: [String: String]
+    ) -> String {
+        var info = resolvedVersionInfo()
+        let resolvedSocketPath = CLISocketPathResolver.resolve(
+            requestedPath: requestedSocketPath,
+            source: socketPathSource,
+            environment: processEnv
+        )
+
+        if let appInfo = runningAppVersionInfo(
+            socketPath: resolvedSocketPath,
+            explicitPassword: explicitPassword,
+            processEnv: processEnv
+        ) {
+            info.merge(appInfo, uniquingKeysWith: { _, new in new })
+        }
+
+        return versionSummary(from: info)
+    }
+
+    private func runningAppVersionInfo(
+        socketPath: String,
+        explicitPassword: String?,
+        processEnv: [String: String]
+    ) -> [String: String]? {
+        guard cliIsUnixSocketFile(socketPath) else {
+            return nil
+        }
+
+        let client = SocketClient(path: socketPath, configuration: .versionQuery(processEnv: processEnv))
+        do {
+            try client.connect()
+            defer { client.close() }
+            try authenticateClientIfNeeded(client, explicitPassword: explicitPassword)
+            let payload = try client.sendV2(method: "system.identify")
+            return versionInfo(from: payload["app_info"] as? [String: Any])
+        } catch {
+            return nil
+        }
     }
 
     private func printWelcome() {
