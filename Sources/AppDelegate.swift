@@ -1697,6 +1697,55 @@ func shouldRouteCommandEquivalentDirectlyToMainMenu(_ event: NSEvent) -> Bool {
     return true
 }
 
+func standardCommandEditingAction(_ event: NSEvent) -> Selector? {
+    let normalizedFlags = event.modifierFlags
+        .intersection(.deviceIndependentFlagsMask)
+        .subtracting([.numericPad, .function, .capsLock])
+    let normalizedChars = (event.charactersIgnoringModifiers ?? "").lowercased()
+
+    switch normalizedFlags {
+    case [.command]:
+        switch normalizedChars {
+        case "x":
+            return #selector(NSText.cut(_:))
+        case "c":
+            return #selector(NSText.copy(_:))
+        case "v":
+            return #selector(NSText.paste(_:))
+        case "a":
+            return #selector(NSText.selectAll(_:))
+        case "z":
+            return Selector(("undo:"))
+        case "y":
+            return Selector(("redo:"))
+        default:
+            return nil
+        }
+    case [.command, .shift]:
+        if normalizedChars == "z" {
+            return Selector(("redo:"))
+        }
+        return nil
+    default:
+        return nil
+    }
+}
+
+func performCommandEditingAction(
+    _ action: Selector,
+    startingAt firstResponder: NSResponder?,
+    fallbackResponder: NSResponder? = nil
+) -> Bool {
+    if let firstResponder, firstResponder.tryToPerform(action, with: nil) {
+        return true
+    }
+    if let fallbackResponder, fallbackResponder !== firstResponder,
+       fallbackResponder.tryToPerform(action, with: nil) {
+        return true
+    }
+    return false
+}
+
 func cmuxOwningGhosttyView(for responder: NSResponder?) -> GhosttyNSView? {
     guard let responder else { return nil }
     if let ghosttyView = responder as? GhosttyNSView {
@@ -11089,9 +11138,8 @@ private extension NSWindow {
         // (which walks the SwiftUI content view hierarchy) and dispatch Command-key
         // events directly to the main menu. This avoids the broken SwiftUI focus path.
         if firstResponderGhosttyView != nil,
-           shouldRouteCommandEquivalentDirectlyToMainMenu(event),
-           let mainMenu = NSApp.mainMenu {
-            let consumedByMenu = mainMenu.performKeyEquivalent(with: event)
+           shouldRouteCommandEquivalentDirectlyToMainMenu(event) {
+            let consumedByMenu = NSApp.mainMenu?.performKeyEquivalent(with: event) ?? false
 #if DEBUG
             if browserZoomShortcutTraceCandidate(
                 flags: event.modifierFlags,
@@ -11106,6 +11154,17 @@ private extension NSWindow {
             }
 #endif
             if !consumedByMenu {
+                if let action = standardCommandEditingAction(event),
+                   performCommandEditingAction(
+                       action,
+                       startingAt: self.firstResponder,
+                       fallbackResponder: firstResponderGhosttyView
+                   ) {
+#if DEBUG
+                    dlog("  → consumed by responder chain action=\(NSStringFromSelector(action))")
+#endif
+                    return true
+                }
                 // Fall through to the original performKeyEquivalent path below.
             } else {
 #if DEBUG

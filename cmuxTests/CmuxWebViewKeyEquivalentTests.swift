@@ -191,6 +191,19 @@ final class CommandEquivalentResponderFallbackTests: XCTestCase {
             "Cmd+V should reach the terminal responder even when the menu path does not handle paste"
         )
     }
+
+    func testPerformCommandEditingActionInvokesGhosttyPasteResponderDirectly() {
+        let ghosttyView = PasteProbeGhosttyView(frame: .zero)
+
+        XCTAssertTrue(
+            performCommandEditingAction(
+                #selector(NSText.paste(_:)),
+                startingAt: ghosttyView,
+                fallbackResponder: ghosttyView
+            )
+        )
+        XCTAssertEqual(ghosttyView.pasteInvocationCount, 1)
+    }
 }
 
 final class CmuxWebViewKeyEquivalentTests: XCTestCase {
