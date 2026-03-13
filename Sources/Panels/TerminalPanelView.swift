@@ -14,27 +14,59 @@ struct TerminalPanelView: View {
     let onFocus: () -> Void
     let onTriggerFlash: () -> Void
 
+    @AppStorage(TextBoxInputSettings.enabledKey) private var textBoxEnabled = TextBoxInputSettings.defaultEnabled
+    @AppStorage(TextBoxInputSettings.enterToSendKey) private var enterToSend = TextBoxInputSettings.defaultEnterToSend
+
+    private var showTextBox: Bool {
+        textBoxEnabled && panel.isTextBoxActive
+    }
+
     var body: some View {
-        // Layering contract: terminal find UI is mounted in GhosttySurfaceScrollView (AppKit portal layer)
-        // via `searchState`. Rendering `SurfaceSearchOverlay` in this SwiftUI container can hide it.
-        GhosttyTerminalView(
-            terminalSurface: panel.surface,
-            isActive: isFocused,
-            isVisibleInUI: isVisibleInUI,
-            portalZPriority: portalPriority,
-            showsInactiveOverlay: isSplit && !isFocused,
-            showsUnreadNotificationRing: hasUnreadNotification,
-            inactiveOverlayColor: appearance.unfocusedOverlayNSColor,
-            inactiveOverlayOpacity: appearance.unfocusedOverlayOpacity,
-            searchState: panel.searchState,
-            reattachToken: panel.viewReattachToken,
-            onFocus: { _ in onFocus() },
-            onTriggerFlash: onTriggerFlash
-        )
-        // Keep the NSViewRepresentable identity stable across bonsplit structural updates.
-        // This prevents transient teardown/recreate that can momentarily detach the hosted terminal view.
-        .id(panel.id)
-        .background(Color.clear)
+        let config = GhosttyConfig.load()
+        let runtimeBg = GhosttyApp.shared.defaultBackgroundColor
+        let runtimeFg = config.foregroundColor
+        let font = NSFont.monospacedSystemFont(ofSize: config.fontSize, weight: .regular)
+
+        VStack(spacing: 0) {
+            GhosttyTerminalView(
+                terminalSurface: panel.surface,
+                isActive: isFocused,
+                isVisibleInUI: isVisibleInUI,
+                portalZPriority: portalPriority,
+                showsInactiveOverlay: isSplit && !isFocused,
+                showsUnreadNotificationRing: hasUnreadNotification,
+                inactiveOverlayColor: appearance.unfocusedOverlayNSColor,
+                inactiveOverlayOpacity: appearance.unfocusedOverlayOpacity,
+                searchState: panel.searchState,
+                reattachToken: panel.viewReattachToken,
+                onFocus: { _ in onFocus() },
+                onTriggerFlash: onTriggerFlash
+            )
+            .id(panel.id)
+            .background(Color.clear)
+
+            if showTextBox {
+                TextBoxInputContainer(
+                    text: $panel.textBoxContent,
+                    enterToSend: enterToSend,
+                    commandHistory: panel.commandHistory,
+                    terminalBackgroundColor: runtimeBg,
+                    terminalForegroundColor: runtimeFg,
+                    terminalFont: font,
+                    onSend: { text in
+                        panel.sendTextFromTextBox(text)
+                    },
+                    onEscape: {
+                        panel.surface.focusTerminalView()
+                    }
+                )
+            }
+        }
+        .onChange(of: textBoxEnabled) { enabled in
+            if enabled && !panel.isTextBoxActive {
+                panel.isTextBoxActive = true
+            }
+        }
     }
 }
 

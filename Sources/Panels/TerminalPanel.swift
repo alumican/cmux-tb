@@ -29,6 +29,32 @@ final class TerminalPanel: Panel, ObservableObject {
         }
     }
 
+    /// Whether TextBox input mode is currently active for this panel.
+    /// Defaults to the global setting so that new panels inherit the user's preference.
+    @Published var isTextBoxActive: Bool = TextBoxInputSettings.isEnabled()
+
+    /// Preserved text content when switching between TextBox and terminal input modes.
+    @Published var textBoxContent: String = ""
+
+    /// Command history shared with TextBoxInputView for Up/Down arrow navigation.
+    let commandHistory = CommandHistory()
+
+    /// Toggle TextBox input mode on/off, preserving input content across switches.
+    func toggleTextBoxMode() {
+        isTextBoxActive.toggle()
+    }
+
+    /// Send text through TextBox: writes to PTY and records in command history.
+    /// Focus stays in the TextBox after sending.
+    func sendTextFromTextBox(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .newlines)
+        if !trimmed.isEmpty {
+            commandHistory.add(trimmed)
+            surface.sendText(trimmed)
+        }
+        surface.sendReturnKey()
+    }
+
     /// Bump this token to force SwiftUI to call `updateNSView` on `GhosttyTerminalView`,
     /// which re-attaches the hosted view after bonsplit close/reparent operations.
     ///

@@ -37,6 +37,7 @@ struct cmuxApp: App {
     @AppStorage(KeyboardShortcutSettings.Action.renameWorkspace.defaultsKey) private var renameWorkspaceShortcutData = Data()
     @AppStorage(KeyboardShortcutSettings.Action.openFolder.defaultsKey) private var openFolderShortcutData = Data()
     @AppStorage(KeyboardShortcutSettings.Action.closeWorkspace.defaultsKey) private var closeWorkspaceShortcutData = Data()
+    @AppStorage(KeyboardShortcutSettings.Action.toggleTextBoxInput.defaultsKey) private var toggleTextBoxInputShortcutData = Data()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     init() {
@@ -528,6 +529,10 @@ struct cmuxApp: App {
                     }
                 }
 
+                splitCommandButton(title: String(localized: "menu.view.toggleTextBoxInput", defaultValue: "Toggle TextBox Input"), shortcut: toggleTextBoxInputMenuShortcut) {
+                    activeTabManager.selectedWorkspace?.focusedTerminalPanel?.toggleTextBoxMode()
+                }
+
                 Divider()
 
                 splitCommandButton(title: String(localized: "menu.view.nextSurface", defaultValue: "Next Surface"), shortcut: nextSurfaceMenuShortcut) {
@@ -784,6 +789,13 @@ struct cmuxApp: App {
         decodeShortcut(
             from: closeWorkspaceShortcutData,
             fallback: KeyboardShortcutSettings.Action.closeWorkspace.defaultShortcut
+        )
+    }
+
+    private var toggleTextBoxInputMenuShortcut: StoredShortcut {
+        decodeShortcut(
+            from: toggleTextBoxInputShortcutData,
+            fallback: KeyboardShortcutSettings.Action.toggleTextBoxInput.defaultShortcut
         )
     }
 
@@ -3090,6 +3102,8 @@ struct SettingsView: View {
     private var openSidebarPullRequestLinksInCmuxBrowser = BrowserLinkOpenSettings.defaultOpenSidebarPullRequestLinksInCmuxBrowser
     @AppStorage(ShortcutHintDebugSettings.showHintsOnCommandHoldKey)
     private var showShortcutHintsOnCommandHold = ShortcutHintDebugSettings.defaultShowHintsOnCommandHold
+    @AppStorage(TextBoxInputSettings.enabledKey) private var textBoxInputEnabled = TextBoxInputSettings.defaultEnabled
+    @AppStorage(TextBoxInputSettings.enterToSendKey) private var textBoxEnterToSend = TextBoxInputSettings.defaultEnterToSend
     @AppStorage("sidebarShowPorts") private var sidebarShowPorts = true
     @AppStorage("sidebarShowLog") private var sidebarShowLog = true
     @AppStorage("sidebarShowProgress") private var sidebarShowProgress = true
@@ -3966,6 +3980,42 @@ struct SettingsView: View {
                         SettingsCardNote(String(localized: "settings.automation.port.note", defaultValue: "Each workspace gets CMUX_PORT and CMUX_PORT_END env vars with a dedicated port range. New terminals inherit these values."))
                     }
 
+                    SettingsSectionHeader(title: String(localized: "settings.section.textBoxInput", defaultValue: "TextBox Input"))
+                    SettingsCard {
+                        SettingsCardRow(
+                            String(localized: "settings.textBoxInput.enableMode", defaultValue: "Enable Mode"),
+                            subtitle: String(localized: "settings.textBoxInput.enableMode.subtitle", defaultValue: "Replace terminal input with a native text box. Supports standard editing, IME, and clipboard shortcuts.")
+                        ) {
+                            Toggle("", isOn: $textBoxInputEnabled)
+                                .labelsHidden()
+                                .controlSize(.small)
+                        }
+
+                        SettingsCardDivider()
+
+                        SettingsCardRow(
+                            String(localized: "settings.textBoxInput.sendToEnter", defaultValue: "Send to Enter"),
+                            subtitle: String(localized: "settings.textBoxInput.sendToEnter.subtitle", defaultValue: "Insert new line to Shift+Enter")
+                        ) {
+                            Toggle("", isOn: $textBoxEnterToSend)
+                                .labelsHidden()
+                                .controlSize(.small)
+                        }
+                        .disabled(!textBoxInputEnabled)
+                        .opacity(textBoxInputEnabled ? 1.0 : 0.5)
+
+                        SettingsCardDivider()
+
+                        SettingsCardRow(
+                            String(localized: "settings.textBoxInput.toggleShortcut", defaultValue: "Toggle Input Mode"),
+                            subtitle: String(localized: "settings.textBoxInput.toggleShortcut.subtitle", defaultValue: "Configurable in Keyboard Shortcuts settings.")
+                        ) {
+                            Text(KeyboardShortcutSettings.toggleTextBoxInputShortcut().displayString)
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
                     SettingsSectionHeader(title: String(localized: "settings.section.browser", defaultValue: "Browser"))
                     SettingsCard {
                         SettingsPickerRow(
@@ -4430,6 +4480,8 @@ struct SettingsView: View {
         socketPasswordDraft = ""
         socketPasswordStatusMessage = nil
         socketPasswordStatusIsError = false
+        textBoxInputEnabled = TextBoxInputSettings.defaultEnabled
+        textBoxEnterToSend = TextBoxInputSettings.defaultEnterToSend
         KeyboardShortcutSettings.resetAll()
         WorkspaceTabColorSettings.reset()
         reloadWorkspaceTabColorSettings()
