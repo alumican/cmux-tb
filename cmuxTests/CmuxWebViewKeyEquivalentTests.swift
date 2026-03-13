@@ -102,6 +102,97 @@ final class SplitShortcutTransientFocusGuardTests: XCTestCase {
     }
 }
 
+@MainActor
+final class CommandEquivalentResponderFallbackTests: XCTestCase {
+    private final class PasteProbeGhosttyView: GhosttyNSView {
+        private(set) var pasteInvocationCount = 0
+
+        override func paste(_ sender: Any?) {
+            pasteInvocationCount += 1
+        }
+    }
+
+    private func makeWindow() -> NSWindow {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 360, height: 240),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        let contentView = NSView(frame: window.contentRect(forFrameRect: window.frame))
+        window.contentView = contentView
+        return window
+    }
+
+    private func installEmptyMainMenu() {
+        let mainMenu = NSMenu()
+        let fileItem = NSMenuItem(title: "File", action: nil, keyEquivalent: "")
+        let fileMenu = NSMenu(title: "File")
+        mainMenu.addItem(fileItem)
+        mainMenu.setSubmenu(fileMenu, for: fileItem)
+        NSApp.mainMenu = mainMenu
+    }
+
+    private func makeKeyDownEvent(
+        key: String,
+        modifiers: NSEvent.ModifierFlags,
+        keyCode: UInt16,
+        windowNumber: Int
+    ) -> NSEvent? {
+        NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: modifiers,
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: windowNumber,
+            context: nil,
+            characters: key,
+            charactersIgnoringModifiers: key,
+            isARepeat: false,
+            keyCode: keyCode
+        )
+    }
+
+    func testWindowPerformKeyEquivalentRoutesCmdVToTerminalResponderWhenMenuDoesNotHandlePaste() {
+        _ = NSApplication.shared
+        AppDelegate.installWindowResponderSwizzlesForTesting()
+        installEmptyMainMenu()
+
+        let window = makeWindow()
+        defer { window.orderOut(nil) }
+
+        guard let contentView = window.contentView else {
+            XCTFail("Expected content view")
+            return
+        }
+
+        let ghosttyView = PasteProbeGhosttyView(frame: contentView.bounds)
+        ghosttyView.autoresizingMask = [.width, .height]
+        contentView.addSubview(ghosttyView)
+
+        window.makeKeyAndOrderFront(nil)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+
+        XCTAssertTrue(window.makeFirstResponder(ghosttyView))
+        guard let event = makeKeyDownEvent(
+            key: "v",
+            modifiers: [.command],
+            keyCode: 9,
+            windowNumber: window.windowNumber
+        ) else {
+            XCTFail("Failed to construct Cmd+V event")
+            return
+        }
+
+        XCTAssertTrue(window.performKeyEquivalent(with: event))
+        XCTAssertEqual(
+            ghosttyView.pasteInvocationCount,
+            1,
+            "Cmd+V should reach the terminal responder even when the menu path does not handle paste"
+        )
+    }
+}
+
 final class CmuxWebViewKeyEquivalentTests: XCTestCase {
     private final class ActionSpy: NSObject {
         private(set) var invoked: Bool = false
