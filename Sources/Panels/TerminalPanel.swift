@@ -39,9 +39,14 @@ final class TerminalPanel: Panel, ObservableObject {
     /// Command history shared with TextBoxInputView for Up/Down arrow navigation.
     let commandHistory = CommandHistory()
 
-    /// Toggle TextBox input mode on/off, preserving input content across switches.
+    /// Toggle TextBox input mode on/off.
+    /// Closing focuses the terminal; opening focuses the TextBox automatically
+    /// via `InputTextView.makeNSView`.
     func toggleTextBoxMode() {
         isTextBoxActive.toggle()
+        if !isTextBoxActive {
+            surface.focusTerminalView()
+        }
     }
 
     /// Send text through TextBox: writes to PTY and records in command history.

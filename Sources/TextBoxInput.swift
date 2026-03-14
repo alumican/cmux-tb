@@ -240,6 +240,11 @@ struct TextBoxInputView: NSViewRepresentable {
         scrollView.documentView = textView
         context.coordinator.textView = textView
 
+        // Auto-focus the text view when it appears
+        DispatchQueue.main.async {
+            textView.window?.makeFirstResponder(textView)
+        }
+
         return scrollView
     }
 
