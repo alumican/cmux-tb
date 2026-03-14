@@ -43,27 +43,54 @@ enum TextBoxInputSettings {
     }
 }
 
+// MARK: - Text Submission
+
+/// Send text through TextBox: writes to PTY via bracket paste, then
+/// sends Return as a separate synthetic key event after a delay.
+///
+/// **Why not `sendText(text + "\r")` or `sendText(text + "\n")`?**
+/// `sendText` wraps content in bracket paste (`\x1b[200~…\x1b[201~`).
+/// Applications that enable bracket paste mode (zsh, Claude CLI, etc.)
+/// treat `\r`/`\n` inside the paste as literal characters, not as
+/// command execution. Return must be sent as a separate synthetic key
+/// event *outside* the paste sequence.
+/// Note: `sendText(text + "\n")` does work for apps that don't use
+/// bracket paste (e.g., node REPL), but fails for shell and Claude CLI.
+///
+/// **Why 200ms delay?**
+/// Claude CLI shows "pasting text…" while processing bracket paste
+/// (~100ms). If Return arrives before processing finishes, it is
+/// silently ignored. 50ms and 100ms were tested and are insufficient.
+/// 200ms is the minimum reliable value.
+enum TextBoxSubmit {
+    static func send(_ text: String, via surface: TerminalSurface) {
+        let trimmed = text.trimmingCharacters(in: .newlines)
+        if !trimmed.isEmpty {
+            surface.sendText(trimmed)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak surface] in
+            surface?.sendReturnKey()
+        }
+    }
+}
+
 // MARK: - Container View
 
 /// Inline text input that sits flush at the bottom of the terminal.
 ///
 /// Styled as a thin single-line field with the terminal's own colors so it looks
 /// like the prompt's caret area was replaced by a native text field.
+///
+/// Accepts a `TerminalSurface` directly so that all key forwarding and
+/// text submission logic stays inside TextBoxInput.swift, minimizing
+/// TextBox-specific code in upstream files.
 struct TextBoxInputContainer: View {
     @Binding var text: String
     let enterToSend: Bool
+    let surface: TerminalSurface
     let terminalBackgroundColor: NSColor
     let terminalForegroundColor: NSColor
     let terminalFont: NSFont
-    let onSend: (String) -> Void
-    let onEscape: () -> Void
-    let onArrowUp: () -> Void
-    let onArrowDown: () -> Void
-    let onArrowLeft: () -> Void
-    let onArrowRight: () -> Void
-    let onTab: () -> Void
-    let onBackspace: () -> Void
-    let onControlKey: (NSEvent) -> Void
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 4) {
@@ -71,14 +98,14 @@ struct TextBoxInputContainer: View {
                 text: $text,
                 enterToSend: enterToSend,
                 onSubmit: submit,
-                onEscape: onEscape,
-                onArrowUp: onArrowUp,
-                onArrowDown: onArrowDown,
-                onArrowLeft: onArrowLeft,
-                onArrowRight: onArrowRight,
-                onTab: onTab,
-                onBackspace: onBackspace,
-                onControlKey: onControlKey,
+                onEscape: { surface.focusTerminalView() },
+                onArrowUp: { surface.sendArrowUpKey() },
+                onArrowDown: { surface.sendArrowDownKey() },
+                onArrowLeft: { surface.sendArrowLeftKey() },
+                onArrowRight: { surface.sendArrowRightKey() },
+                onTab: { surface.sendTabKey() },
+                onBackspace: { surface.sendBackspaceKey() },
+                onControlKey: { event in surface.forwardKeyEvent(event) },
                 terminalBackgroundColor: terminalBackgroundColor,
                 terminalForegroundColor: terminalForegroundColor,
                 terminalFont: terminalFont
@@ -106,7 +133,7 @@ struct TextBoxInputContainer: View {
 
     private func submit() {
         let content = text
-        onSend(content)
+        TextBoxSubmit.send(content, via: surface)
         text = ""
     }
 }
