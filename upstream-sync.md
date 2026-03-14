@@ -47,7 +47,7 @@ Fork changes in upstream files are marked with `// [TextBox]` comments. When con
 - **Keep fork additions** (lines near `[TextBox]` markers)
 - **Accept upstream changes** for everything else
 - Files with TextBox modifications:
-  - `Sources/GhosttyTerminalView.swift` — `sendEscapeKey()`, `sendSyntheticKey` helpers, focus guard
+  - `Sources/GhosttyTerminalView.swift` — `sendKey()`, `forwardKeyEvent()`, focus guard
   - `Sources/Panels/TerminalPanelView.swift` — TextBox container, background opacity
   - `Sources/Panels/TerminalPanel.swift` — `toggleTextBoxMode()`
   - `Sources/cmuxApp.swift` — TextBox settings UI, `@AppStorage`, menu item, reset
