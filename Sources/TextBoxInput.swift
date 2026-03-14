@@ -78,11 +78,19 @@ private enum TextBoxInputViewLayout {
     /// Border stroke width around the text view container.
     static let borderWidth: CGFloat = 1
     /// Border color opacity when unfocused (fraction of the terminal foreground color).
-    static let borderOpacity: CGFloat = 0.3
+    static let borderOpacity: CGFloat = 0.25
     /// Border color opacity when focused (caret is in the text view).
-    static let focusedBorderOpacity: CGFloat = 0.6
+    static let focusedBorderOpacity: CGFloat = 0.45
     /// Corner radius of the text view container.
     static let cornerRadius: CGFloat = 6
+    /// Opacity of the placeholder text (fraction of the terminal foreground color).
+    static let placeholderOpacity: CGFloat = 0.35
+    /// Placeholder text shown when the TextBox is empty.
+    /// The send key name changes based on the Enter-to-Send setting.
+    static func placeholderText(enterToSend: Bool) -> String {
+        let sendKey = enterToSend ? "Return" : "Shift+Return"
+        return "Commands or prompts here… \(sendKey) to send"
+    }
 }
 
 /// Behavioral constants for TextBox (timing, thresholds, etc.).
@@ -314,6 +322,7 @@ struct TextBoxInputView: NSViewRepresentable {
         textView.textContainerInset = TextBoxInputViewLayout.textInset
         textView.delegate = context.coordinator
         textView.inputCoordinator = context.coordinator
+        textView.enterToSend = enterToSend
 
         // Match terminal appearance
         textView.drawsBackground = true
@@ -357,7 +366,8 @@ struct TextBoxInputView: NSViewRepresentable {
             textView.string = text
             context.coordinator.recalcHeight(textView)
         }
-        // Keep colors in sync with terminal theme changes
+        // Keep enterToSend and colors in sync
+        textView.enterToSend = enterToSend
         textView.backgroundColor = terminalBackgroundColor
         textView.insertionPointColor = terminalForegroundColor
         textView.typingAttributes = makeTypingAttributes()
@@ -521,6 +531,26 @@ private struct TextBoxSendButtonBody: View {
 ///    forwarding raw NSEvents.
 final class InputTextView: NSTextView {
     weak var inputCoordinator: TextBoxInputView.Coordinator?
+    var enterToSend: Bool = false
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        if string.isEmpty {
+            let placeholder = TextBoxInputViewLayout.placeholderText(enterToSend: enterToSend)
+            let color = (insertionPointColor ?? .white)
+                .withAlphaComponent(TextBoxInputViewLayout.placeholderOpacity)
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: font ?? NSFont.systemFont(ofSize: 13),
+                .foregroundColor: color,
+            ]
+            let inset = textContainerInset
+            let origin = NSPoint(
+                x: inset.width + (textContainer?.lineFragmentPadding ?? 0),
+                y: inset.height
+            )
+            NSString(string: placeholder).draw(at: origin, withAttributes: attrs)
+        }
+    }
 
     override func becomeFirstResponder() -> Bool {
         let result = super.becomeFirstResponder()
