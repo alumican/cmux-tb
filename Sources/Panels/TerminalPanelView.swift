@@ -18,6 +18,11 @@ struct TerminalPanelView: View {
     @AppStorage(TextBoxInputSettings.enabledKey) private var textBoxEnabled = TextBoxInputSettings.defaultEnabled
     @AppStorage(TextBoxInputSettings.enterToSendKey) private var enterToSend = TextBoxInputSettings.defaultEnterToSend
 
+    /// Whether the TextBox is visible. Requires both the global Enabled setting
+    /// AND the per-panel `isTextBoxActive` flag. When Enabled is toggled on,
+    /// `onChange` below forces `isTextBoxActive = true` so that TextBox always
+    /// appears — even if the user had previously hidden it via the keyboard
+    /// shortcut. This is intentional: Enabled on = TextBox visible.
     private var showTextBox: Bool {
         textBoxEnabled && panel.isTextBoxActive
     }
@@ -61,6 +66,7 @@ struct TerminalPanelView: View {
         // [TextBox]
         .onChange(of: textBoxEnabled) { enabled in
             if enabled && !panel.isTextBoxActive {
+                // Enabled on = always show TextBox, even if previously hidden via shortcut.
                 panel.isTextBoxActive = true
             }
         }

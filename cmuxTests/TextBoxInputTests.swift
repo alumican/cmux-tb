@@ -55,7 +55,7 @@ final class TextBoxShortcutTests: XCTestCase {
         let shortcut = KeyboardShortcutSettings.Action.toggleTextBoxInput.defaultShortcut
         XCTAssertEqual(shortcut.key, "t")
         XCTAssertTrue(shortcut.command)
-        XCTAssertTrue(shortcut.shift)
+        XCTAssertFalse(shortcut.shift)
         XCTAssertTrue(shortcut.option)
         XCTAssertFalse(shortcut.control)
     }
@@ -69,7 +69,7 @@ final class TextBoxShortcutTests: XCTestCase {
 
     func testToggleTextBoxInputLabel() {
         let label = KeyboardShortcutSettings.Action.toggleTextBoxInput.label
-        XCTAssertEqual(label, "Toggle TextBox Input")
+        XCTAssertEqual(label, "Show/Hide TextBox Input")
     }
 
     func testCustomShortcutPersistence() {
