@@ -3179,6 +3179,10 @@ final class TerminalSurface: Identifiable, ObservableObject {
         sendSyntheticKey(characters: "\u{7F}", keyCode: 51)
     }
 
+    func sendEscapeKey() {
+        sendSyntheticKey(characters: "\u{1B}", keyCode: 53)
+    }
+
     /// [TextBox] Forward an NSEvent directly to the terminal view.
     /// Used only for Ctrl+key combinations, which are already proper
     /// NSEvents from the system and don't produce garbage characters.

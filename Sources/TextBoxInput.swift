@@ -33,7 +33,7 @@
 // ## Settings (Settings > TextBox Input)
 //
 // - **Enable Mode**: Toggle TextBox on/off (default: off)
-// - **Send to Enter**: On = Enter sends / Shift+Enter inserts newline,
+// - **Send on Return**: On = Return sends / Shift+Return inserts newline,
 //   Off = Enter inserts newline / Shift+Enter sends (default: on)
 // - **Show/Hide TextBox Input**: Shows the toggle shortcut (Cmd+Option+T)
 //
@@ -111,9 +111,11 @@ private enum TextBoxBehavior {
 enum TextBoxInputSettings {
     static let enabledKey = "textBoxEnabled"
     static let enterToSendKey = "textBoxEnterToSend"
+    static let escapeBehaviorKey = "textBoxEscapeBehavior"
 
     static let defaultEnabled = true
     static let defaultEnterToSend = false
+    static let defaultEscapeBehavior = TextBoxEscapeBehavior.sendEscape
 
     /// Opacity applied to settings rows when TextBox is disabled.
     static let disabledSettingsOpacity: Double = 0.5
@@ -130,6 +132,33 @@ enum TextBoxInputSettings {
             return defaultEnterToSend
         }
         return UserDefaults.standard.bool(forKey: enterToSendKey)
+    }
+
+    static func escapeBehavior() -> TextBoxEscapeBehavior {
+        guard let raw = UserDefaults.standard.string(forKey: escapeBehaviorKey),
+              let value = TextBoxEscapeBehavior(rawValue: raw) else {
+            return defaultEscapeBehavior
+        }
+        return value
+    }
+}
+
+/// What happens when the user presses Escape in the TextBox.
+enum TextBoxEscapeBehavior: String, CaseIterable, Identifiable {
+    /// Move focus back to the terminal without sending ESC.
+    case focusTerminal = "focusTerminal"
+    /// Send the ESC key to the terminal and keep focus in the TextBox.
+    case sendEscape = "sendEscape"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .focusTerminal:
+            return String(localized: "textbox.escapeBehavior.focusTerminal", defaultValue: "Focus Terminal")
+        case .sendEscape:
+            return String(localized: "textbox.escapeBehavior.sendEscape", defaultValue: "Send ESC Key")
+        }
     }
 }
 
@@ -212,7 +241,14 @@ struct TextBoxInputContainer: View {
                 enterToSend: enterToSend,
                 textViewHeight: $textViewHeight,
                 onSubmit: submit,
-                onEscape: { surface.focusTerminalView() },
+                onEscape: {
+                    switch TextBoxInputSettings.escapeBehavior() {
+                    case .focusTerminal:
+                        surface.focusTerminalView()
+                    case .sendEscape:
+                        surface.sendEscapeKey()
+                    }
+                },
                 onArrowUp: { surface.sendArrowUpKey() },
                 onArrowDown: { surface.sendArrowDownKey() },
                 onArrowLeft: { surface.sendArrowLeftKey() },

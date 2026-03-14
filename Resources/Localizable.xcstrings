@@ -54209,6 +54209,12 @@
             "state" : "new",
             "value" : "TextBox Input"
           }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "TextBox入力"
+          }
         }
       }
     },
@@ -55124,6 +55130,12 @@
             "state" : "new",
             "value" : "Enable Mode"
           }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "テキストボックスを有効化"
+          }
         }
       }
     },
@@ -55133,29 +55145,81 @@
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "Replace terminal input with a native text box. Supports standard editing, IME, and clipboard shortcuts."
+            "value" : "Add a text box for terminal input. Supports standard editing, IME, and clipboard shortcuts."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ターミナル入力のためのテキストボックスを追加します。標準的な編集、IME、クリップボードのショートカットに対応しています。"
           }
         }
       }
     },
-    "settings.textBoxInput.sendToEnter" : {
+    "settings.textBoxInput.escapeBehavior" : {
       "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "Send to Enter"
+            "value" : "Escape Key"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Escapeキー"
           }
         }
       }
     },
-    "settings.textBoxInput.sendToEnter.subtitle" : {
+    "settings.textBoxInput.escapeBehavior.subtitle" : {
       "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "Insert new line to Shift+Enter"
+            "value" : "Action when pressing Escape in the TextBox."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "TextBox内でEscapeキーを押したときの動作"
+          }
+        }
+      }
+    },
+    "settings.textBoxInput.sendOnReturn" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Send on Return"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enterで送信"
+          }
+        }
+      }
+    },
+    "settings.textBoxInput.sendOnReturn.subtitle" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Insert new line with Shift+Return"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Shift+Enterで改行"
           }
         }
       }
@@ -55168,6 +55232,12 @@
             "state" : "new",
             "value" : "Show/Hide TextBox Input"
           }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "TextBox入力の表示/非表示"
+          }
         }
       }
     },
@@ -55178,6 +55248,12 @@
           "stringUnit" : {
             "state" : "new",
             "value" : "Configurable in Keyboard Shortcuts settings."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "キーボードショートカット設定で変更できます"
           }
         }
       }
@@ -64496,6 +64572,40 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "未命名標籤頁"
+          }
+        }
+      }
+    },
+    "textbox.escapeBehavior.focusTerminal" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Focus Terminal"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ターミナルにフォーカス"
+          }
+        }
+      }
+    },
+    "textbox.escapeBehavior.sendEscape" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Send ESC Key"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ESCキーを送信"
           }
         }
       }
