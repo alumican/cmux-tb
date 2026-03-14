@@ -2,62 +2,94 @@
 //
 // # TextBox Input Mode
 //
-// ターミナルの入力をネイティブ NSTextView ベースのテキストボックスに置き換える機能。
-// ターミナルエミュレータが苦手とする標準的なテキスト編集体験を提供する。
+// Replaces terminal input with a native NSTextView-based text box,
+// providing a standard text editing experience that terminal emulators
+// typically struggle with.
 //
-// ## 意義
+// ## Rationale
 //
-// ghostty (libghostty) のキー入力パスでは IME・macOS 標準キーバインド・
-// システムクリップボード操作が制限される場面がある。TextBox はこれらを
-// ネイティブ AppKit で処理し、確定したテキストだけをターミナルに送る。
-// シェル履歴・補完・Ctrl+key などのターミナル操作は TextBox にフォーカスを
-// 保ったまま透過的に転送されるため、ユーザーは 2 つの入力モードを意識せず
-// シームレスな体験を得られる。
+// ghostty (libghostty)'s key input path has limitations with IME,
+// macOS standard keybindings, and system clipboard operations. TextBox
+// handles these natively via AppKit and sends only committed text to the
+// terminal. Shell history, tab completion, and Ctrl+key commands are
+// transparently forwarded while keeping focus in the TextBox, so users
+// get a seamless experience without being aware of two input modes.
 //
-// ## 機能一覧
+// ## Features
 //
-// - **ネイティブテキスト編集**: Cmd+A/C/V/X/Z、Option+矢印による単語移動、
-//   マウス選択、ドラッグ&ドロップなど macOS 標準操作がすべて使える
-// - **IME 対応**: 日本語入力など多言語入力メソッドが正しく動作する
-// - **複数行入力**: 改行を挿入して複数行テキストを一括送信できる。
-//   Enter で送信 / Shift+Enter で改行がデフォルト（設定で逆転可能）
-// - **スクロール**: テキストが長くなるとボックス内でスクロールし、枠は固定
-// - **シェル履歴連携**: TextBox が空の状態で矢印キー・Tab・Backspace を押すと
-//   ターミナルにキーを転送し、シェルの補完や履歴ナビゲーションが使える
-// - **Ctrl+key 転送**: Ctrl+C/D/Z 等はテキスト内容に関係なくターミナルに転送
-// - **テーマ追従**: ターミナルの背景色・前景色・フォントに自動で合わせる
-// - **トグル**: Cmd+Shift+Option+T でオン/オフ切替、フォーカスも連動
+// - **Native text editing**: Full macOS standard operations including
+//   Cmd+A/C/V/X/Z, Option+Arrow word navigation, mouse selection, drag & drop
+// - **IME support**: Input methods (e.g. Japanese) work correctly
+// - **Multi-line input**: Insert newlines for multi-line text submission.
+//   Enter=send / Shift+Enter=newline by default (reversible in settings)
+// - **Scrolling**: Text box scrolls internally when content grows; frame stays fixed
+// - **Shell history integration**: When TextBox is empty, arrow keys / Tab /
+//   Backspace are forwarded to the terminal for shell completion and history
+// - **Ctrl+key forwarding**: Ctrl+C/D/Z etc. are always forwarded to the
+//   terminal regardless of TextBox content
+// - **Theme sync**: Automatically matches terminal background/foreground colors and font
+// - **Toggle**: Cmd+Shift+Option+T to toggle on/off with focus coordination
 //
-// ## 設定項目 (Settings > TextBox Input)
+// ## Settings (Settings > TextBox Input)
 //
-// - **Enable Mode**: TextBox のオン/オフ（デフォルト: オフ）
-// - **Send to Enter**: オンで Enter=送信 / Shift+Enter=改行、
-//   オフで Enter=改行 / Shift+Enter=送信（デフォルト: オン）
-// - **Toggle Input Mode**: トグルショートカットの表示（Cmd+Shift+Option+T）
+// - **Enable Mode**: Toggle TextBox on/off (default: off)
+// - **Send to Enter**: On = Enter sends / Shift+Enter inserts newline,
+//   Off = Enter inserts newline / Shift+Enter sends (default: on)
+// - **Toggle Input Mode**: Shows the toggle shortcut (Cmd+Shift+Option+T)
 //
-// ## upstream への影響
+// ## Upstream impact
 //
-// upstream (manaflow-ai/cmux) ファイルへの追加コードには `[TextBox]` マークを
-// 付けている。`grep -r '\[TextBox\]' Sources/` で全箇所を一覧できる。
+// Code added to upstream (manaflow-ai/cmux) files is marked with `[TextBox]`.
+// Run `grep -r '\[TextBox\]' Sources/` to list all locations.
 
 import AppKit
 import SwiftUI
 
 // MARK: - Constants
 
+/// Layout constants for the TextBox bar (outer container with padding, button, spacing).
 private enum TextBoxLayout {
-    static let fontSizeOffset: CGFloat = 1
-    static let singleLineHeight: CGFloat = 20
-    static let maxHeight: CGFloat = 100
-    static let lineSpacing: CGFloat = 4
-    static let textInset = NSSize(width: 2, height: 6)
-    static let borderWidth: CGFloat = 1
-    static let borderOpacity: CGFloat = 0.3
-    static let cornerRadius: CGFloat = 6
+    /// Font size of the send button icon.
     static let sendButtonSize: CGFloat = 18
-    static let horizontalPadding: CGFloat = 8
+    /// Spacing between the text view and the send button.
+    static let contentSpacing: CGFloat = 8
+    /// Left padding of the entire TextBox bar.
+    static let leftPadding: CGFloat = 8
+    /// Right padding of the entire TextBox bar.
+    static let rightPadding: CGFloat = 8
+    /// Top padding of the entire TextBox bar.
     static let topPadding: CGFloat = 8
+    /// Bottom padding of the entire TextBox bar.
     static let bottomPadding: CGFloat = 8
+}
+
+/// Layout constants for the internal NSTextView (font, sizing, border, insets).
+private enum TextBoxInputViewLayout {
+    /// Minimum height of the text view (fits a single line of text).
+    static let minHeight: CGFloat = 20
+    /// Maximum height before the text view starts scrolling internally.
+    static let maxHeight: CGFloat = 100
+    /// Added to the terminal font size for the TextBox font (slightly larger for readability).
+    static let fontSizeOffset: CGFloat = 1
+    /// Extra spacing between lines in multi-line input.
+    static let lineSpacing: CGFloat = 4
+    /// Inset between the text and the text view's border (width=horizontal, height=vertical).
+    static let textInset = NSSize(width: 2, height: 6)
+    /// Border stroke width around the text view container.
+    static let borderWidth: CGFloat = 1
+    /// Border color opacity (fraction of the terminal foreground color).
+    static let borderOpacity: CGFloat = 0.3
+    /// Corner radius of the text view container.
+    static let cornerRadius: CGFloat = 6
+}
+
+/// Behavioral constants for TextBox (timing, thresholds, etc.).
+private enum TextBoxBehavior {
+    /// Delay (seconds) between sending pasted text and the Return key.
+    /// Apps using bracket paste mode (zsh, Claude CLI) need time to process
+    /// the paste before receiving Return. 50ms/100ms are insufficient;
+    /// 200ms is the minimum reliable value. See `TextBoxSubmit` for details.
+    static let returnKeyDelay: TimeInterval = 0.2
 }
 
 // MARK: - Settings
@@ -110,7 +142,7 @@ enum TextBoxSubmit {
         if !trimmed.isEmpty {
             surface.sendText(trimmed)
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak surface] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + TextBoxBehavior.returnKeyDelay) { [weak surface] in
             surface?.sendReturnKey()
         }
     }
@@ -135,7 +167,7 @@ struct TextBoxInputContainer: View {
     let terminalFont: NSFont
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 4) {
+        HStack(alignment: .bottom, spacing: TextBoxLayout.contentSpacing) {
             TextBoxInputView(
                 text: $text,
                 enterToSend: enterToSend,
@@ -153,8 +185,8 @@ struct TextBoxInputContainer: View {
                 terminalFont: terminalFont
             )
             .frame(
-                minHeight: TextBoxLayout.singleLineHeight,
-                maxHeight: TextBoxLayout.maxHeight
+                minHeight: TextBoxInputViewLayout.minHeight,
+                maxHeight: TextBoxInputViewLayout.maxHeight
             )
 
             Button(action: submit) {
@@ -166,8 +198,8 @@ struct TextBoxInputContainer: View {
             .disabled(false)
             .help(String(localized: "textbox.send.tooltip", defaultValue: "Send"))
         }
-        .padding(.leading, TextBoxLayout.horizontalPadding)
-        .padding(.trailing, TextBoxLayout.horizontalPadding)
+        .padding(.leading, TextBoxLayout.leftPadding)
+        .padding(.trailing, TextBoxLayout.rightPadding)
         .padding(.top, TextBoxLayout.topPadding)
         .padding(.bottom, TextBoxLayout.bottomPadding)
         .background(Color(nsColor: terminalBackgroundColor))
@@ -203,13 +235,13 @@ struct TextBoxInputView: NSViewRepresentable {
     let terminalFont: NSFont
 
     private var adjustedFont: NSFont {
-        let size = max(1, terminalFont.pointSize + TextBoxLayout.fontSizeOffset)
+        let size = max(1, terminalFont.pointSize + TextBoxInputViewLayout.fontSizeOffset)
         return NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
     }
 
     private func makeParagraphStyle() -> NSMutableParagraphStyle {
         let style = NSMutableParagraphStyle()
-        style.lineSpacing = TextBoxLayout.lineSpacing
+        style.lineSpacing = TextBoxInputViewLayout.lineSpacing
         return style
     }
 
@@ -232,9 +264,9 @@ struct TextBoxInputView: NSViewRepresentable {
         // direct layer property access). A plain NSView wrapper works reliably.
         let container = NSView()
         container.wantsLayer = true
-        container.layer?.borderWidth = TextBoxLayout.borderWidth
-        container.layer?.borderColor = terminalForegroundColor.withAlphaComponent(TextBoxLayout.borderOpacity).cgColor
-        container.layer?.cornerRadius = TextBoxLayout.cornerRadius
+        container.layer?.borderWidth = TextBoxInputViewLayout.borderWidth
+        container.layer?.borderColor = terminalForegroundColor.withAlphaComponent(TextBoxInputViewLayout.borderOpacity).cgColor
+        container.layer?.cornerRadius = TextBoxInputViewLayout.cornerRadius
         container.layer?.masksToBounds = true
 
         let scrollView = NSScrollView()
@@ -253,7 +285,7 @@ struct TextBoxInputView: NSViewRepresentable {
         textView.usesFindPanel = false
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
-        textView.textContainerInset = TextBoxLayout.textInset
+        textView.textContainerInset = TextBoxInputViewLayout.textInset
         textView.delegate = context.coordinator
         textView.inputCoordinator = context.coordinator
 
@@ -300,7 +332,7 @@ struct TextBoxInputView: NSViewRepresentable {
         textView.backgroundColor = terminalBackgroundColor
         textView.insertionPointColor = terminalForegroundColor
         textView.typingAttributes = makeTypingAttributes()
-        container.layer?.borderColor = terminalForegroundColor.withAlphaComponent(TextBoxLayout.borderOpacity).cgColor
+        container.layer?.borderColor = terminalForegroundColor.withAlphaComponent(TextBoxInputViewLayout.borderOpacity).cgColor
     }
 
     // MARK: Coordinator
