@@ -54213,7 +54213,7 @@
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "TextBox入力"
+            "value" : "テキストボックス入力"
           }
         }
       }
@@ -55185,7 +55185,7 @@
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "TextBox内でEscapeキーを押したときの動作"
+            "value" : "テキストボックスでEscapeキーを押したときの動作"
           }
         }
       }
@@ -55236,7 +55236,7 @@
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "TextBox入力の表示/非表示"
+            "value" : "テキストボックス表示/非表示の切替"
           }
         }
       }
@@ -55253,7 +55253,7 @@
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "キーボードショートカット設定で変更できます"
+            "value" : "キーボードショートカット設定にて変更できます"
           }
         }
       }
@@ -64610,6 +64610,40 @@
         }
       }
     },
+    "textbox.placeholder.enterToNewline" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Commands or prompts here… Shift+Return to send"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "コマンドやプロンプトを入力… Shift+Enterで送信"
+          }
+        }
+      }
+    },
+    "textbox.placeholder.enterToSend" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Commands or prompts here… Shift+Return for newline"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "コマンドやプロンプトを入力… Shift+Enterで改行"
+          }
+        }
+      }
+    },
     "textbox.send.tooltip" : {
       "comment" : "A tooltip for the \"Send\" button in the text box input.",
       "extractionState" : "extracted_with_value",
@@ -64619,6 +64653,12 @@
           "stringUnit" : {
             "state" : "new",
             "value" : "Send"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "送信"
           }
         }
       }

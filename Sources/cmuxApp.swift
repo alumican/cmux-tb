@@ -4006,8 +4006,7 @@ struct SettingsView: View {
                                 .labelsHidden()
                                 .controlSize(.small)
                         }
-                        .disabled(!textBoxInputEnabled)
-                        .opacity(textBoxInputEnabled ? 1.0 : TextBoxInputSettings.disabledSettingsOpacity)
+                        .textBoxSettingsDisabled(!textBoxInputEnabled)
 
                         SettingsCardDivider()
 
@@ -4021,8 +4020,7 @@ struct SettingsView: View {
                                 Text(behavior.displayName).tag(behavior.rawValue)
                             }
                         }
-                        .disabled(!textBoxInputEnabled)
-                        .opacity(textBoxInputEnabled ? 1.0 : TextBoxInputSettings.disabledSettingsOpacity)
+                        .textBoxSettingsDisabled(!textBoxInputEnabled)
 
                         SettingsCardDivider()
 
@@ -4034,7 +4032,7 @@ struct SettingsView: View {
                                 .font(.system(size: 12, design: .monospaced))
                                 .foregroundStyle(.secondary)
                         }
-                        .opacity(textBoxInputEnabled ? 1.0 : TextBoxInputSettings.disabledSettingsOpacity)
+                        .textBoxSettingsDisabled(!textBoxInputEnabled)
                     }
 
                     SettingsSectionHeader(title: String(localized: "settings.section.browser", defaultValue: "Browser"))
@@ -4501,9 +4499,7 @@ struct SettingsView: View {
         socketPasswordDraft = ""
         socketPasswordStatusMessage = nil
         socketPasswordStatusIsError = false
-        textBoxInputEnabled = TextBoxInputSettings.defaultEnabled // [TextBox]
-        textBoxEnterToSend = TextBoxInputSettings.defaultEnterToSend // [TextBox]
-        textBoxEscapeBehavior = TextBoxInputSettings.defaultEscapeBehavior.rawValue // [TextBox]
+        TextBoxInputSettings.resetAll() // [TextBox]
         KeyboardShortcutSettings.resetAll()
         WorkspaceTabColorSettings.reset()
         reloadWorkspaceTabColorSettings()
