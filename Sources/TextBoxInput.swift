@@ -52,7 +52,7 @@ private enum TextBoxLayout {
     /// Font size of the send button icon.
     static let sendButtonSize: CGFloat = 18
     /// Spacing between the text view and the send button.
-    static let contentSpacing: CGFloat = 8
+    static let contentSpacing: CGFloat = 4
     /// Left padding of the entire TextBox bar.
     static let leftPadding: CGFloat = 8
     /// Right padding of the entire TextBox bar.
@@ -85,11 +85,15 @@ private enum TextBoxInputViewLayout {
 
 /// Behavioral constants for TextBox (timing, thresholds, etc.).
 private enum TextBoxBehavior {
-    /// Delay (seconds) between sending pasted text and the Return key.
+    /// Delay (ms) between sending pasted text and the Return key.
     /// Apps using bracket paste mode (zsh, Claude CLI) need time to process
     /// the paste before receiving Return. 50ms/100ms are insufficient;
     /// 200ms is the minimum reliable value. See `TextBoxSubmit` for details.
-    static let returnKeyDelay: TimeInterval = 0.2
+    /// Set to 0 to send Return immediately after the paste.
+    static let returnKeyDelayMs: Int = 200
+    /// Delay (ms) before sending Return when the TextBox is empty (no paste).
+    /// Set to 0 to send Return immediately (default).
+    static let emptyReturnKeyDelayMs: Int = 0
 }
 
 // MARK: - Settings
@@ -139,11 +143,20 @@ enum TextBoxInputSettings {
 enum TextBoxSubmit {
     static func send(_ text: String, via surface: TerminalSurface) {
         let trimmed = text.trimmingCharacters(in: .newlines)
+        let delayMs = TextBoxBehavior.returnKeyDelayMs
         if !trimmed.isEmpty {
             surface.sendText(trimmed)
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + TextBoxBehavior.returnKeyDelay) { [weak surface] in
-            surface?.sendReturnKey()
+        let effectiveDelayMs = trimmed.isEmpty
+            ? TextBoxBehavior.emptyReturnKeyDelayMs
+            : delayMs
+        if effectiveDelayMs <= 0 {
+            surface.sendReturnKey()
+        } else {
+            let delay = TimeInterval(effectiveDelayMs) / 1000.0
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak surface] in
+                surface?.sendReturnKey()
+            }
         }
     }
 }
@@ -192,10 +205,8 @@ struct TextBoxInputContainer: View {
             Button(action: submit) {
                 Image(systemName: "paperplane.fill")
                     .font(.system(size: TextBoxLayout.sendButtonSize))
-                    .foregroundColor(Color(nsColor: terminalForegroundColor))
             }
-            .buttonStyle(.borderless)
-            .disabled(false)
+            .buttonStyle(TextBoxSendButtonStyle(foregroundColor: Color(nsColor: terminalForegroundColor)))
             .help(String(localized: "textbox.send.tooltip", defaultValue: "Send"))
         }
         .padding(.leading, TextBoxLayout.leftPadding)
@@ -408,6 +419,44 @@ struct TextBoxInputView: NSViewRepresentable {
             return true
         }
 
+    }
+}
+
+// MARK: - Send Button Style
+
+/// Button style with hover/press highlight for the TextBox send button.
+private struct TextBoxSendButtonStyle: ButtonStyle {
+    let foregroundColor: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        TextBoxSendButtonBody(configuration: configuration, foregroundColor: foregroundColor)
+    }
+}
+
+private struct TextBoxSendButtonBody: View {
+    let configuration: TextBoxSendButtonStyle.Configuration
+    let foregroundColor: Color
+    @State private var isHovered = false
+
+    private var backgroundOpacity: Double {
+        if configuration.isPressed { return 0.16 }
+        if isHovered { return 0.08 }
+        return 0.0
+    }
+
+    var body: some View {
+        configuration.label
+            .foregroundColor(foregroundColor)
+            .padding(4)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(foregroundColor.opacity(backgroundOpacity))
+            )
+            .onHover { hovering in
+                isHovered = hovering
+            }
+            .animation(.easeOut(duration: 0.12), value: isHovered)
+            .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
     }
 }
 
