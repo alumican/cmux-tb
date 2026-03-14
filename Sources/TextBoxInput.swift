@@ -43,66 +43,6 @@ enum TextBoxInputSettings {
     }
 }
 
-// MARK: - Command History
-
-/// Manages command history for TextBox input, enabling Up/Down arrow navigation.
-final class CommandHistory {
-    private var entries: [String] = []
-    private var index: Int = 0
-    private var draftText: String = ""
-    private let maxEntries: Int
-
-    init(maxEntries: Int = 200) {
-        self.maxEntries = maxEntries
-    }
-
-    var count: Int { entries.count }
-    var currentIndex: Int { index }
-    var currentDraft: String { draftText }
-
-    /// Add a command to history and reset index to the end.
-    func add(_ command: String) {
-        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        // Avoid consecutive duplicates
-        if entries.last != trimmed {
-            entries.append(trimmed)
-            if entries.count > maxEntries {
-                entries.removeFirst(entries.count - maxEntries)
-            }
-        }
-        index = entries.count
-        draftText = ""
-    }
-
-    /// Navigate to the previous (older) entry. Returns the entry text, or nil if already at the oldest.
-    func navigateBack(currentText: String) -> String? {
-        guard !entries.isEmpty else { return nil }
-        if index == entries.count {
-            draftText = currentText
-        }
-        guard index > 0 else { return nil }
-        index -= 1
-        return entries[index]
-    }
-
-    /// Navigate to the next (newer) entry. Returns the entry text or draft, or nil if already at the newest.
-    func navigateForward() -> String? {
-        guard index < entries.count else { return nil }
-        index += 1
-        if index == entries.count {
-            return draftText
-        }
-        return entries[index]
-    }
-
-    /// Reset navigation position to the end (latest).
-    func resetNavigation() {
-        index = entries.count
-        draftText = ""
-    }
-}
-
 // MARK: - Container View
 
 /// Inline text input that sits flush at the bottom of the terminal.
