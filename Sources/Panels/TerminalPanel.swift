@@ -31,6 +31,9 @@ final class TerminalPanel: Panel, ObservableObject {
 
     /// [TextBox] Whether TextBox input mode is currently active for this panel.
     /// Defaults to the global setting so that new panels inherit the user's preference.
+    /// The keyboard shortcut can set this to `false` to hide TextBox per-panel.
+    /// When the global Enabled setting is toggled back on, `TerminalPanelView.onChange`
+    /// forces this back to `true` so that Enabled on = always visible.
     @Published var isTextBoxActive: Bool = TextBoxInputSettings.isEnabled()
 
     /// [TextBox] Preserved text content when switching between TextBox and terminal input modes.

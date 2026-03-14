@@ -530,7 +530,7 @@ struct cmuxApp: App {
                 }
 
                 // [TextBox]
-                splitCommandButton(title: String(localized: "menu.view.toggleTextBoxInput", defaultValue: "Toggle TextBox Input"), shortcut: toggleTextBoxInputMenuShortcut) {
+                splitCommandButton(title: String(localized: "menu.view.toggleTextBoxInput", defaultValue: "Show/Hide TextBox Input"), shortcut: toggleTextBoxInputMenuShortcut) {
                     activeTabManager.selectedWorkspace?.focusedTerminalPanel?.toggleTextBoxMode()
                 }
 
@@ -3107,6 +3107,7 @@ struct SettingsView: View {
     // [TextBox]
     @AppStorage(TextBoxInputSettings.enabledKey) private var textBoxInputEnabled = TextBoxInputSettings.defaultEnabled
     @AppStorage(TextBoxInputSettings.enterToSendKey) private var textBoxEnterToSend = TextBoxInputSettings.defaultEnterToSend
+    @AppStorage(TextBoxInputSettings.escapeBehaviorKey) private var textBoxEscapeBehavior = TextBoxInputSettings.defaultEscapeBehavior.rawValue
     @AppStorage("sidebarShowPorts") private var sidebarShowPorts = true
     @AppStorage("sidebarShowLog") private var sidebarShowLog = true
     @AppStorage("sidebarShowProgress") private var sidebarShowProgress = true
@@ -3998,26 +3999,42 @@ struct SettingsView: View {
                         SettingsCardDivider()
 
                         SettingsCardRow(
-                            String(localized: "settings.textBoxInput.sendToEnter", defaultValue: "Send to Enter"),
-                            subtitle: String(localized: "settings.textBoxInput.sendToEnter.subtitle", defaultValue: "Insert new line to Shift+Enter")
+                            String(localized: "settings.textBoxInput.sendOnReturn", defaultValue: "Send on Return"),
+                            subtitle: String(localized: "settings.textBoxInput.sendOnReturn.subtitle", defaultValue: "Insert new line with Shift+Return")
                         ) {
                             Toggle("", isOn: $textBoxEnterToSend)
                                 .labelsHidden()
                                 .controlSize(.small)
                         }
                         .disabled(!textBoxInputEnabled)
-                        .opacity(textBoxInputEnabled ? 1.0 : 0.5)
+                        .opacity(textBoxInputEnabled ? 1.0 : TextBoxInputSettings.disabledSettingsOpacity)
+
+                        SettingsCardDivider()
+
+                        SettingsPickerRow(
+                            String(localized: "settings.textBoxInput.escapeBehavior", defaultValue: "Escape Key"),
+                            subtitle: String(localized: "settings.textBoxInput.escapeBehavior.subtitle", defaultValue: "Action when pressing Escape in the TextBox."),
+                            controlWidth: pickerColumnWidth,
+                            selection: $textBoxEscapeBehavior
+                        ) {
+                            ForEach(TextBoxEscapeBehavior.allCases) { behavior in
+                                Text(behavior.displayName).tag(behavior.rawValue)
+                            }
+                        }
+                        .disabled(!textBoxInputEnabled)
+                        .opacity(textBoxInputEnabled ? 1.0 : TextBoxInputSettings.disabledSettingsOpacity)
 
                         SettingsCardDivider()
 
                         SettingsCardRow(
-                            String(localized: "settings.textBoxInput.toggleShortcut", defaultValue: "Toggle Input Mode"),
+                            String(localized: "settings.textBoxInput.toggleShortcut", defaultValue: "Show/Hide TextBox Input"),
                             subtitle: String(localized: "settings.textBoxInput.toggleShortcut.subtitle", defaultValue: "Configurable in Keyboard Shortcuts settings.")
                         ) {
                             Text(KeyboardShortcutSettings.toggleTextBoxInputShortcut().displayString)
                                 .font(.system(size: 12, design: .monospaced))
                                 .foregroundStyle(.secondary)
                         }
+                        .opacity(textBoxInputEnabled ? 1.0 : TextBoxInputSettings.disabledSettingsOpacity)
                     }
 
                     SettingsSectionHeader(title: String(localized: "settings.section.browser", defaultValue: "Browser"))
@@ -4486,6 +4503,7 @@ struct SettingsView: View {
         socketPasswordStatusIsError = false
         textBoxInputEnabled = TextBoxInputSettings.defaultEnabled // [TextBox]
         textBoxEnterToSend = TextBoxInputSettings.defaultEnterToSend // [TextBox]
+        textBoxEscapeBehavior = TextBoxInputSettings.defaultEscapeBehavior.rawValue // [TextBox]
         KeyboardShortcutSettings.resetAll()
         WorkspaceTabColorSettings.reset()
         reloadWorkspaceTabColorSettings()

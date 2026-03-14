@@ -8084,6 +8084,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return true
         }
 
+        // [TextBox]
+        if matchShortcut(event: event, shortcut: KeyboardShortcutSettings.shortcut(for: .toggleTextBoxInput)) {
+            if let workspace = tabManager?.selectedWorkspace {
+                workspace.focusedTerminalPanel?.toggleTextBoxMode()
+            }
+            return true
+        }
+
         if matchShortcut(event: event, shortcut: KeyboardShortcutSettings.shortcut(for: .newTab)) {
 #if DEBUG
             dlog("shortcut.action name=newWorkspace \(debugShortcutRouteSnapshot(event: event))")

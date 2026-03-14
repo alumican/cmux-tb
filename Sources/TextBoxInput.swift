@@ -22,20 +22,20 @@
 // - **IME support**: Input methods (e.g. Japanese) work correctly
 // - **Multi-line input**: Insert newlines for multi-line text submission.
 //   Enter=send / Shift+Enter=newline by default (reversible in settings)
-// - **Scrolling**: Text box scrolls internally when content grows; frame stays fixed
+// - **Auto-grow**: Text box grows with content (1–5 lines), then scrolls internally
 // - **Shell history integration**: When TextBox is empty, arrow keys / Tab /
 //   Backspace are forwarded to the terminal for shell completion and history
 // - **Ctrl+key forwarding**: Ctrl+C/D/Z etc. are always forwarded to the
 //   terminal regardless of TextBox content
 // - **Theme sync**: Automatically matches terminal background/foreground colors and font
-// - **Toggle**: Cmd+Option+T to toggle on/off with focus coordination
+// - **Show/Hide**: Cmd+Option+T to show/hide with focus coordination
 //
 // ## Settings (Settings > TextBox Input)
 //
 // - **Enable Mode**: Toggle TextBox on/off (default: off)
-// - **Send to Enter**: On = Enter sends / Shift+Enter inserts newline,
+// - **Send on Return**: On = Return sends / Shift+Return inserts newline,
 //   Off = Enter inserts newline / Shift+Enter sends (default: on)
-// - **Toggle Input Mode**: Shows the toggle shortcut (Cmd+Option+T)
+// - **Show/Hide TextBox Input**: Shows the toggle shortcut (Cmd+Option+T)
 //
 // ## Upstream impact
 //
@@ -65,10 +65,10 @@ private enum TextBoxLayout {
 
 /// Layout constants for the internal NSTextView (font, sizing, border, insets).
 private enum TextBoxInputViewLayout {
-    /// Minimum height of the text view (fits a single line of text).
-    static let minHeight: CGFloat = 20
-    /// Maximum height before the text view starts scrolling internally.
-    static let maxHeight: CGFloat = 100
+    /// Minimum number of visible lines.
+    static let minLines: Int = 2
+    /// Maximum number of visible lines before the text view starts scrolling internally.
+    static let maxLines: Int = 6
     /// Added to the terminal font size for the TextBox font (slightly larger for readability).
     static let fontSizeOffset: CGFloat = 1
     /// Extra spacing between lines in multi-line input.
@@ -78,11 +78,18 @@ private enum TextBoxInputViewLayout {
     /// Border stroke width around the text view container.
     static let borderWidth: CGFloat = 1
     /// Border color opacity when unfocused (fraction of the terminal foreground color).
-    static let borderOpacity: CGFloat = 0.3
+    static let borderOpacity: CGFloat = 0.25
     /// Border color opacity when focused (caret is in the text view).
-    static let focusedBorderOpacity: CGFloat = 0.6
+    static let focusedBorderOpacity: CGFloat = 0.45
     /// Corner radius of the text view container.
     static let cornerRadius: CGFloat = 6
+    /// Opacity of the placeholder text (fraction of the terminal foreground color).
+    static let placeholderOpacity: CGFloat = 0.35
+    /// Placeholder text shown when the TextBox is empty.
+    /// The send key name changes based on the Enter-to-Send setting.
+    static func placeholderText(enterToSend: Bool) -> String {
+        return "Commands or prompts here… Shift+Return \(enterToSend ? "for newline" : "to send")"
+    }
 }
 
 /// Behavioral constants for TextBox (timing, thresholds, etc.).
@@ -104,9 +111,14 @@ private enum TextBoxBehavior {
 enum TextBoxInputSettings {
     static let enabledKey = "textBoxEnabled"
     static let enterToSendKey = "textBoxEnterToSend"
+    static let escapeBehaviorKey = "textBoxEscapeBehavior"
 
     static let defaultEnabled = true
     static let defaultEnterToSend = false
+    static let defaultEscapeBehavior = TextBoxEscapeBehavior.sendEscape
+
+    /// Opacity applied to settings rows when TextBox is disabled.
+    static let disabledSettingsOpacity: Double = 0.5
 
     static func isEnabled() -> Bool {
         if UserDefaults.standard.object(forKey: enabledKey) == nil {
@@ -120,6 +132,33 @@ enum TextBoxInputSettings {
             return defaultEnterToSend
         }
         return UserDefaults.standard.bool(forKey: enterToSendKey)
+    }
+
+    static func escapeBehavior() -> TextBoxEscapeBehavior {
+        guard let raw = UserDefaults.standard.string(forKey: escapeBehaviorKey),
+              let value = TextBoxEscapeBehavior(rawValue: raw) else {
+            return defaultEscapeBehavior
+        }
+        return value
+    }
+}
+
+/// What happens when the user presses Escape in the TextBox.
+enum TextBoxEscapeBehavior: String, CaseIterable, Identifiable {
+    /// Move focus back to the terminal without sending ESC.
+    case focusTerminal = "focusTerminal"
+    /// Send the ESC key to the terminal and keep focus in the TextBox.
+    case sendEscape = "sendEscape"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .focusTerminal:
+            return String(localized: "textbox.escapeBehavior.focusTerminal", defaultValue: "Focus Terminal")
+        case .sendEscape:
+            return String(localized: "textbox.escapeBehavior.sendEscape", defaultValue: "Send ESC Key")
+        }
     }
 }
 
@@ -180,14 +219,36 @@ struct TextBoxInputContainer: View {
     let terminalBackgroundColor: NSColor
     let terminalForegroundColor: NSColor
     let terminalFont: NSFont
+    @State private var textViewHeight: CGFloat = 0
+
+    /// Computes the height for a given number of lines using the current font.
+    private func heightForLines(_ count: Int) -> CGFloat {
+        let fontSize = max(1, terminalFont.pointSize + TextBoxInputViewLayout.fontSizeOffset)
+        let font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        let lineHeight = font.ascender - font.descender + font.leading
+            + TextBoxInputViewLayout.lineSpacing
+        return lineHeight * CGFloat(count) + TextBoxInputViewLayout.textInset.height * 2
+    }
 
     var body: some View {
+        let minH = heightForLines(TextBoxInputViewLayout.minLines)
+        let maxH = heightForLines(TextBoxInputViewLayout.maxLines)
+        let clampedHeight = max(minH, min(maxH, textViewHeight))
+
         HStack(alignment: .bottom, spacing: TextBoxLayout.contentSpacing) {
             TextBoxInputView(
                 text: $text,
                 enterToSend: enterToSend,
+                textViewHeight: $textViewHeight,
                 onSubmit: submit,
-                onEscape: { surface.focusTerminalView() },
+                onEscape: {
+                    switch TextBoxInputSettings.escapeBehavior() {
+                    case .focusTerminal:
+                        surface.focusTerminalView()
+                    case .sendEscape:
+                        surface.sendEscapeKey()
+                    }
+                },
                 onArrowUp: { surface.sendArrowUpKey() },
                 onArrowDown: { surface.sendArrowDownKey() },
                 onArrowLeft: { surface.sendArrowLeftKey() },
@@ -199,10 +260,7 @@ struct TextBoxInputContainer: View {
                 terminalForegroundColor: terminalForegroundColor,
                 terminalFont: terminalFont
             )
-            .frame(
-                minHeight: TextBoxInputViewLayout.minHeight,
-                maxHeight: TextBoxInputViewLayout.maxHeight
-            )
+            .frame(height: clampedHeight)
 
             Button(action: submit) {
                 Image(systemName: "paperplane.fill")
@@ -234,6 +292,7 @@ struct TextBoxInputContainer: View {
 struct TextBoxInputView: NSViewRepresentable {
     @Binding var text: String
     let enterToSend: Bool
+    @Binding var textViewHeight: CGFloat
     let onSubmit: () -> Void
     let onEscape: () -> Void
     let onArrowUp: () -> Void
@@ -301,10 +360,12 @@ struct TextBoxInputView: NSViewRepresentable {
         textView.textContainerInset = TextBoxInputViewLayout.textInset
         textView.delegate = context.coordinator
         textView.inputCoordinator = context.coordinator
+        textView.enterToSend = enterToSend
 
-        // Match terminal appearance
-        textView.drawsBackground = true
-        textView.backgroundColor = terminalBackgroundColor
+        // Match terminal appearance — background is drawn by the outer
+        // SwiftUI .background() to avoid double-compositing when the
+        // terminal uses background-opacity < 1.
+        textView.drawsBackground = false
         textView.insertionPointColor = terminalForegroundColor
         textView.font = adjustedFont
         textView.typingAttributes = makeTypingAttributes()
@@ -327,9 +388,10 @@ struct TextBoxInputView: NSViewRepresentable {
             scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
         ])
 
-        // Auto-focus the text view when it appears
+        // Auto-focus the text view and calculate initial height
         DispatchQueue.main.async {
             textView.window?.makeFirstResponder(textView)
+            context.coordinator.recalcHeight(textView)
         }
 
         return container
@@ -341,9 +403,10 @@ struct TextBoxInputView: NSViewRepresentable {
         context.coordinator.parent = self
         if textView.string != text {
             textView.string = text
+            context.coordinator.recalcHeight(textView)
         }
-        // Keep colors in sync with terminal theme changes
-        textView.backgroundColor = terminalBackgroundColor
+        // Keep enterToSend and colors in sync
+        textView.enterToSend = enterToSend
         textView.insertionPointColor = terminalForegroundColor
         textView.typingAttributes = makeTypingAttributes()
         let isFocused = textView.window?.firstResponder === textView
@@ -375,6 +438,16 @@ struct TextBoxInputView: NSViewRepresentable {
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
             parent.text = textView.string
+            recalcHeight(textView)
+        }
+
+        func recalcHeight(_ textView: NSTextView) {
+            guard let layoutManager = textView.layoutManager,
+                  let textContainer = textView.textContainer else { return }
+            layoutManager.ensureLayout(for: textContainer)
+            let contentHeight = layoutManager.usedRect(for: textContainer).height
+                + textView.textContainerInset.height * 2
+            parent.textViewHeight = contentHeight
         }
 
         /// Returns true if the action was handled (consumed).
@@ -496,6 +569,26 @@ private struct TextBoxSendButtonBody: View {
 ///    forwarding raw NSEvents.
 final class InputTextView: NSTextView {
     weak var inputCoordinator: TextBoxInputView.Coordinator?
+    var enterToSend: Bool = false
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        if string.isEmpty {
+            let placeholder = TextBoxInputViewLayout.placeholderText(enterToSend: enterToSend)
+            let color = (insertionPointColor ?? .white)
+                .withAlphaComponent(TextBoxInputViewLayout.placeholderOpacity)
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: font ?? NSFont.systemFont(ofSize: 13),
+                .foregroundColor: color,
+            ]
+            let inset = textContainerInset
+            let origin = NSPoint(
+                x: inset.width + (textContainer?.lineFragmentPadding ?? 0),
+                y: inset.height
+            )
+            NSString(string: placeholder).draw(at: origin, withAttributes: attrs)
+        }
+    }
 
     override func becomeFirstResponder() -> Bool {
         let result = super.becomeFirstResponder()
