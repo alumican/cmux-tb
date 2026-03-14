@@ -184,7 +184,7 @@ enum KeyboardShortcutSettings {
                 // Safari default: Show JavaScript Console.
                 return StoredShortcut(key: "c", command: true, shift: false, option: true, control: false)
             case .toggleTextBoxInput: // [TextBox]
-                return StoredShortcut(key: "t", command: true, shift: true, option: true, control: false)
+                return StoredShortcut(key: "t", command: true, shift: false, option: true, control: false)
             }
         }
 

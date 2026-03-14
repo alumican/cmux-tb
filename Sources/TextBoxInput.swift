@@ -28,14 +28,14 @@
 // - **Ctrl+key forwarding**: Ctrl+C/D/Z etc. are always forwarded to the
 //   terminal regardless of TextBox content
 // - **Theme sync**: Automatically matches terminal background/foreground colors and font
-// - **Toggle**: Cmd+Shift+Option+T to toggle on/off with focus coordination
+// - **Toggle**: Cmd+Option+T to toggle on/off with focus coordination
 //
 // ## Settings (Settings > TextBox Input)
 //
 // - **Enable Mode**: Toggle TextBox on/off (default: off)
 // - **Send to Enter**: On = Enter sends / Shift+Enter inserts newline,
 //   Off = Enter inserts newline / Shift+Enter sends (default: on)
-// - **Toggle Input Mode**: Shows the toggle shortcut (Cmd+Shift+Option+T)
+// - **Toggle Input Mode**: Shows the toggle shortcut (Cmd+Option+T)
 //
 // ## Upstream impact
 //
@@ -77,8 +77,10 @@ private enum TextBoxInputViewLayout {
     static let textInset = NSSize(width: 2, height: 6)
     /// Border stroke width around the text view container.
     static let borderWidth: CGFloat = 1
-    /// Border color opacity (fraction of the terminal foreground color).
+    /// Border color opacity when unfocused (fraction of the terminal foreground color).
     static let borderOpacity: CGFloat = 0.3
+    /// Border color opacity when focused (caret is in the text view).
+    static let focusedBorderOpacity: CGFloat = 0.6
     /// Corner radius of the text view container.
     static let cornerRadius: CGFloat = 6
 }
@@ -100,11 +102,11 @@ private enum TextBoxBehavior {
 
 /// Settings for TextBox Input Mode
 enum TextBoxInputSettings {
-    static let enabledKey = "textBoxInputEnabled"
+    static let enabledKey = "textBoxEnabled"
     static let enterToSendKey = "textBoxEnterToSend"
 
-    static let defaultEnabled = false
-    static let defaultEnterToSend = true
+    static let defaultEnabled = true
+    static let defaultEnterToSend = false
 
     static func isEnabled() -> Bool {
         if UserDefaults.standard.object(forKey: enabledKey) == nil {
@@ -315,6 +317,7 @@ struct TextBoxInputView: NSViewRepresentable {
 
         scrollView.documentView = textView
         context.coordinator.textView = textView
+        context.coordinator.container = container
 
         container.addSubview(scrollView)
         NSLayoutConstraint.activate([
@@ -343,7 +346,11 @@ struct TextBoxInputView: NSViewRepresentable {
         textView.backgroundColor = terminalBackgroundColor
         textView.insertionPointColor = terminalForegroundColor
         textView.typingAttributes = makeTypingAttributes()
-        container.layer?.borderColor = terminalForegroundColor.withAlphaComponent(TextBoxInputViewLayout.borderOpacity).cgColor
+        let isFocused = textView.window?.firstResponder === textView
+        let opacity = isFocused
+            ? TextBoxInputViewLayout.focusedBorderOpacity
+            : TextBoxInputViewLayout.borderOpacity
+        container.layer?.borderColor = terminalForegroundColor.withAlphaComponent(opacity).cgColor
     }
 
     // MARK: Coordinator
@@ -351,9 +358,18 @@ struct TextBoxInputView: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: TextBoxInputView
         weak var textView: NSTextView?
+        weak var container: NSView?
 
         init(_ parent: TextBoxInputView) {
             self.parent = parent
+        }
+
+        func updateBorderOpacity(focused: Bool) {
+            let opacity = focused
+                ? TextBoxInputViewLayout.focusedBorderOpacity
+                : TextBoxInputViewLayout.borderOpacity
+            container?.layer?.borderColor = parent.terminalForegroundColor
+                .withAlphaComponent(opacity).cgColor
         }
 
         func textDidChange(_ notification: Notification) {
@@ -480,6 +496,18 @@ private struct TextBoxSendButtonBody: View {
 ///    forwarding raw NSEvents.
 final class InputTextView: NSTextView {
     weak var inputCoordinator: TextBoxInputView.Coordinator?
+
+    override func becomeFirstResponder() -> Bool {
+        let result = super.becomeFirstResponder()
+        if result { inputCoordinator?.updateBorderOpacity(focused: true) }
+        return result
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let result = super.resignFirstResponder()
+        if result { inputCoordinator?.updateBorderOpacity(focused: false) }
+        return result
+    }
 
     override func keyDown(with event: NSEvent) {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
