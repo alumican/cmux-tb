@@ -2,7 +2,7 @@
 <p align="center"><a href="https://github.com/manaflow-ai/cmux">cmux</a> にテキストボックス入力モードを組み込んだフォーク</p>
 
 <p align="center">
-  <a href="https://github.com/alumican/cmux-tb/releases/latest/download/cmux-macos.dmg">
+  <a href="https://github.com/alumican/cmux-tb/releases/latest/download/cmux-tb-macos.dmg">
     <img src="./docs/assets/macos-badge.png" alt="cmux + TextBox for macOS をダウンロード" width="180" />
   </a>
 </p>
@@ -59,7 +59,7 @@ Ctrl+キー（Ctrl+C、Ctrl+D、Ctrl+Z など）や ESCキー は、入力中で
 <tr>
 <td width="40%" valign="middle">
 <h3>Claude Codeとの相性抜群</h3>
-エージェントの起動、プロンプト編集、エージェントへの返答、処理の中断。テキストボックスの中にいたままで操作できます。
+エージェントの起動、プロンプト編集、エージェントへの返答、処理の中断。テキストボックスの中にいたままで操作できます。もちろん他のターミナルエージェントとも。
 </td>
 <td width="60%">
 <video src="./docs/assets/textbox-agent.mp4" autoplay loop muted playsinline width="100%"></video>
@@ -80,7 +80,7 @@ Ctrl+キー（Ctrl+C、Ctrl+D、Ctrl+Z など）や ESCキー は、入力中で
 
 ### DMGでインストール（推奨）
 
-<a href="https://github.com/alumican/cmux-tb/releases/latest/download/cmux-macos.dmg">
+<a href="https://github.com/alumican/cmux-tb/releases/latest/download/cmux-tb-macos.dmg">
   <img src="./docs/assets/macos-badge.png" alt="cmux + TextBox for macOS をダウンロード" width="180" />
 </a>
 
