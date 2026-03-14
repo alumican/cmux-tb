@@ -3142,46 +3142,17 @@ final class TerminalSurface: Identifiable, ObservableObject {
         }
     }
 
-    // [TextBox] Individual key methods for TextBox → terminal forwarding.
+    // [TextBox] Send a named key to the terminal via synthetic NSEvent.
     //
-    // Why individual methods instead of `forwardKeyEvent(rawEvent)`?
+    // Why synthetic events instead of `forwardKeyEvent(rawEvent)`?
     // Forwarding raw NSEvents via `view.keyDown(with:)` produces `^^`
     // garbage characters. By routing through `doCommandBySelector` in
-    // InputTextView → coordinator → these individual synthetic key
-    // methods, we go through AppKit's standard key interpretation path,
-    // which avoids the garbage character issue.
+    // InputTextView → coordinator → this synthetic key method, we go
+    // through AppKit's standard key interpretation path, which avoids
+    // the garbage character issue.
 
-    func sendReturnKey() {
-        sendSyntheticKey(characters: "\r", keyCode: 36)
-    }
-
-    func sendArrowUpKey() {
-        sendSyntheticKey(characters: "\u{F700}", keyCode: 126)
-    }
-
-    func sendArrowDownKey() {
-        sendSyntheticKey(characters: "\u{F701}", keyCode: 125)
-    }
-
-    func sendArrowLeftKey() {
-        sendSyntheticKey(characters: "\u{F702}", keyCode: 123)
-    }
-
-    func sendArrowRightKey() {
-        sendSyntheticKey(characters: "\u{F703}", keyCode: 124)
-    }
-
-    func sendTabKey() {
-        sendSyntheticKey(characters: "\t", keyCode: 48)
-    }
-
-    func sendBackspaceKey() {
-        sendSyntheticKey(characters: "\u{7F}", keyCode: 51)
-    }
-
-    // [TextBox]
-    func sendEscapeKey() {
-        sendSyntheticKey(characters: "\u{1B}", keyCode: 53)
+    func sendKey(_ key: TerminalKey) {
+        sendSyntheticKey(characters: key.characters, keyCode: key.keyCode)
     }
 
     /// [TextBox] Forward an NSEvent directly to the terminal view.

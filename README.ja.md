@@ -1,273 +1,122 @@
-> この翻訳は Claude によって生成されました。改善の提案がある場合は、PR を作成してください。
-
-<h1 align="center">cmux</h1>
-<p align="center">AIコーディングエージェント向けの縦タブと通知機能を備えたGhosttyベースのmacOSターミナル</p>
+<h1 align="center">cmux + TextBox</h1>
+<p align="center"><a href="https://github.com/manaflow-ai/cmux">cmux</a> にテキストボックス入力モードを組み込んだフォーク</p>
 
 <p align="center">
-  <a href="https://github.com/manaflow-ai/cmux/releases/latest/download/cmux-macos.dmg">
-    <img src="./docs/assets/macos-badge.png" alt="macOS版cmuxをダウンロード" width="180" />
+  <a href="https://github.com/alumican/cmux-tb/releases/latest/download/cmux-macos.dmg">
+    <img src="./docs/assets/macos-badge.png" alt="cmux + TextBox for macOS をダウンロード" width="180" />
   </a>
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> | <a href="README.zh-CN.md">简体中文</a> | <a href="README.zh-TW.md">繁體中文</a> | <a href="README.ko.md">한국어</a> | <a href="README.de.md">Deutsch</a> | <a href="README.es.md">Español</a> | <a href="README.fr.md">Français</a> | <a href="README.it.md">Italiano</a> | <a href="README.da.md">Dansk</a> | 日本語 | <a href="README.pl.md">Polski</a> | <a href="README.ru.md">Русский</a> | <a href="README.bs.md">Bosanski</a> | <a href="README.ar.md">العربية</a> | <a href="README.no.md">Norsk</a> | <a href="README.pt-BR.md">Português (Brasil)</a> | <a href="README.th.md">ไทย</a> | <a href="README.tr.md">Türkçe</a> | <a href="README.km.md">ភាសាខ្មែរ</a>
+  <a href="README.md">English</a> | 日本語
 </p>
 
 <p align="center">
-  <a href="https://x.com/manaflowai"><img src="https://img.shields.io/badge/@manaflow-555?logo=x" alt="X / Twitter" /></a>
-  <a href="https://discord.gg/xsgFEVrWCZ"><img src="https://img.shields.io/badge/Discord-555?logo=discord" alt="Discord" /></a>
+  <video src="./docs/assets/textbox-top.mp4" autoplay loop muted playsinline></video>
 </p>
 
-<p align="center">
-  <img src="./docs/assets/main-first-image.png" alt="cmuxスクリーンショット" width="900" />
-</p>
+## なぜテキストボックス？
 
-<p align="center">
-  <a href="https://www.youtube.com/watch?v=i-WxO5YUTOs">▶ デモ動画</a> · <a href="https://cmux.dev/blog/zen-of-cmux">The Zen of cmux</a>
-</p>
+普段のテキストエディタに慣れていると、ターミナルの書き心地は難しいと感じるでしょう。改行・選択・カット・ペーストなど、普段無意識にやっていることがいちいちうまくいかない・・・。
+
+このテキストボックス付きのターミナルは、書きたいことをそのまま書けばOKです。もちろん、ターミナルの入力インターフェースもそのまま使えます。
+
+ややこしそう？大丈夫。2つ入力モードの境界を自然に溶け合わせる工夫が散りばめられているので、違和感なく使えます。
 
 ## 機能
 
 <table>
 <tr>
 <td width="40%" valign="middle">
-<h3>通知リング</h3>
-コーディングエージェントがあなたの注意を必要とするとき、ペインに青いリングが表示され、タブが点灯します
+<h3>シームレス＆モードレス</h3>
+テキストボックスが空のとき、矢印キー・Tab・Backspace はそのままターミナルに送られます。
+<br/>
+<br/>
+Ctrl+キー（Ctrl+C、Ctrl+D、Ctrl+Z など）や ESCキー は、入力中でも関係なく常にターミナルに送られます。
 </td>
 <td width="60%">
-<img src="./docs/assets/notification-rings.png" alt="通知リング" width="100%" />
+<video src="./docs/assets/textbox-seamless.mp4" autoplay loop muted playsinline width="100%"></video>
 </td>
 </tr>
 <tr>
 <td width="40%" valign="middle">
-<h3>通知パネル</h3>
-保留中のすべての通知を一か所で確認、最新の未読にジャンプ
+<h3>必要なときすぐそこに</h3>
+ショートカットでテキストボックスの表示を切り替えると、フォーカスもテキストボックスとターミナルの間をスムーズに移動するので、すぐにタイピングを始められます。
 </td>
 <td width="60%">
-<img src="./docs/assets/sidebar-notification-badge.png" alt="サイドバー通知バッジ" width="100%" />
+<img src="./docs/assets/textbox-toggle.gif" alt="テキストボックス トグル" width="100%" />
 </td>
 </tr>
 <tr>
 <td width="40%" valign="middle">
-<h3>アプリ内ブラウザ</h3>
-<a href="https://github.com/vercel-labs/agent-browser">agent-browser</a>から移植されたスクリプタブルなAPIで、ターミナルの横にブラウザを分割表示
+<h3>使い慣れた操作感</h3>
+テキストボックスは使い慣れたOSネイティブのものを使用。矢印キー、選択、コピー＆ペースト、いつもの操作がそのまま使えます。
 </td>
 <td width="60%">
-<img src="./docs/assets/built-in-browser.png" alt="内蔵ブラウザ" width="100%" />
+<video src="./docs/assets/textbox-edit.mp4" autoplay loop muted playsinline width="100%"></video>
 </td>
 </tr>
 <tr>
 <td width="40%" valign="middle">
-<h3>縦タブ + 横タブ</h3>
-サイドバーにgitブランチ、リンクされたPRのステータス/番号、作業ディレクトリ、リッスン中のポート、最新の通知テキストを表示。水平・垂直に分割可能。
+<h3>Claude Codeとの相性抜群</h3>
+エージェントの起動、プロンプト編集、エージェントへの返答、処理の中断。テキストボックスの中にいたままで操作できます。
 </td>
 <td width="60%">
-<img src="./docs/assets/vertical-horizontal-tabs-and-splits.png" alt="縦タブと分割ペイン" width="100%" />
+<video src="./docs/assets/textbox-agent.mp4" autoplay loop muted playsinline width="100%"></video>
+</td>
+</tr>
+<tr>
+<td width="40%" valign="middle">
+<h3>設定</h3>
+送信はEnter or Shift+Enter？ESCキーの動作は？あなたに馴染む設定にカスタマイズできます。
+</td>
+<td width="60%">
+<img src="./docs/assets/textbox-settings.gif" alt="テキストボックス設定" width="100%" />
 </td>
 </tr>
 </table>
 
-- **スクリプタブル** — CLIとsocket APIでワークスペースの作成、ペインの分割、キーストロークの送信、ブラウザの自動化が可能
-- **ネイティブmacOSアプリ** — SwiftとAppKitで構築、Electronではありません。高速起動、低メモリ消費。
-- **Ghostty互換** — 既存の`~/.config/ghostty/config`からテーマ、フォント、カラーを読み込み
-- **GPU高速化** — libghosttyによるスムーズなレンダリング
-
 ## インストール
 
-### DMG（推奨）
+### DMGでインストール（推奨）
 
-<a href="https://github.com/manaflow-ai/cmux/releases/latest/download/cmux-macos.dmg">
-  <img src="./docs/assets/macos-badge.png" alt="macOS版cmuxをダウンロード" width="180" />
+<a href="https://github.com/alumican/cmux-tb/releases/latest/download/cmux-macos.dmg">
+  <img src="./docs/assets/macos-badge.png" alt="cmux + TextBox for macOS をダウンロード" width="180" />
 </a>
 
-`.dmg`ファイルを開き、cmuxをアプリケーションフォルダにドラッグしてください。cmuxはSparkle経由で自動更新されるため、ダウンロードは一度だけで済みます。
+`.dmg` を開いて cmux を Applications フォルダにドラッグしてください。
 
-### Homebrew
-
-```bash
-brew tap manaflow-ai/cmux
-brew install --cask cmux
-```
-
-後で更新する場合：
+### ソースからビルド
 
 ```bash
-brew upgrade --cask cmux
+git clone --recurse-submodules https://github.com/alumican/cmux-tb.git
+cd cmux
+./scripts/setup.sh
+./scripts/reload.sh --tag textbox
 ```
-
-初回起動時、macOSが確認済みの開発者からのアプリを開くことの確認を求める場合があります。**開く**をクリックして続行してください。
-
-## なぜcmux？
-
-私はClaude CodeとCodexのセッションを多数並列で実行しています。Ghosttyで大量の分割ペインを使い、エージェントが私を必要としているときを知るためにmacOSのネイティブ通知に頼っていました。しかし、Claude Codeの通知本文はいつも「Claude is waiting for your input」というコンテキストのないものばかりで、タブを十分に開くとタイトルすら読めなくなっていました。
-
-いくつかのコーディングオーケストレーターを試しましたが、そのほとんどがElectron/Tauriアプリで、パフォーマンスが気になりました。また、GUIオーケストレーターはそのワークフローに縛られるため、単純にターミナルのほうが好みです。そこで、cmuxをSwift/AppKitのネイティブmacOSアプリとして構築しました。ターミナルレンダリングにはlibghosttyを使用し、テーマ、フォント、カラーは既存のGhostty設定を読み込みます。
-
-主な追加機能はサイドバーと通知システムです。サイドバーには、各ワークスペースのgitブランチ、リンクされたPRのステータス/番号、作業ディレクトリ、リッスン中のポート、最新の通知テキストを表示する縦タブがあります。通知システムはターミナルシーケンス（OSC 9/99/777）を検出し、Claude Code、OpenCodeなどのエージェントフックに接続できるCLI（`cmux notify`）を備えています。エージェントが待機中のとき、そのペインに青いリングが表示され、サイドバーのタブが点灯するので、分割やタブをまたいでどれが私を必要としているかがわかります。Cmd+Shift+Uで最新の未読にジャンプします。
-
-アプリ内ブラウザには[agent-browser](https://github.com/vercel-labs/agent-browser)から移植されたスクリプタブルなAPIがあります。エージェントはアクセシビリティツリーのスナップショットを取得し、要素参照を取得し、クリック、フォーム入力、JSの評価が可能です。ターミナルの横にブラウザペインを分割し、Claude Codeに開発サーバーと直接やり取りさせることができます。
-
-すべてがCLIとsocket APIを通じてスクリプタブルです — ワークスペース/タブの作成、ペインの分割、キーストロークの送信、ブラウザでのURL表示。
-
-## The Zen of cmux
-
-cmuxは開発者のツールの使い方を規定しません。ターミナルとブラウザにCLIがあり、あとはあなた次第です。
-
-cmuxはソリューションではなくプリミティブです。ターミナル、ブラウザ、通知、ワークスペース、分割、タブ、そしてそのすべてを制御するCLIを提供します。cmuxはコーディングエージェントの使い方を強制しません。プリミティブで何を構築するかはあなた次第です。
-
-優れた開発者は常に自分のツールを構築してきました。エージェントとの最適な作業方法はまだ誰も見つけていませんし、クローズドな製品を作っているチームも見つけていません。自分のコードベースに最も近い開発者が最初に見つけるでしょう。
-
-100万人の開発者にコンポーザブルなプリミティブを与えれば、どんなプロダクトチームがトップダウンで設計するよりも速く、最も効率的なワークフローを集合的に見つけ出すでしょう。
-
-## ドキュメント
-
-cmuxの設定方法の詳細は、[ドキュメントをご覧ください](https://cmux.dev/docs/getting-started?utm_source=readme)。
 
 ## キーボードショートカット
 
-### ワークスペース
+### テキストボックス
 
-| ショートカット | アクション |
+| ショートカット | 操作 |
 |----------|--------|
-| ⌘ N | 新規ワークスペース |
-| ⌘ 1–8 | ワークスペース1–8にジャンプ |
-| ⌘ 9 | 最後のワークスペースにジャンプ |
-| ⌃ ⌘ ] | 次のワークスペース |
-| ⌃ ⌘ [ | 前のワークスペース |
-| ⌘ ⇧ W | ワークスペースを閉じる |
-| ⌘ ⇧ R | ワークスペースの名前を変更 |
-| ⌘ B | サイドバーの表示切替 |
+| ⌘ ⌥ T (Cmd + Option + T) | テキストボックスの表示/非表示（設定で変更可） |
+| Return | テキストをターミナルに送信（Shift + Returnと入れ替え可） |
+| ⇧ Return (Shift + Return) | 改行を挿入（Returnと入れ替え可） |
+| ESC | ターミナルにフォーカスを戻す or ESCキーを送信（設定で切替） |
 
-### サーフェス
+cmux の標準ショートカットもそのまま使えます。全一覧は [cmux README](https://github.com/manaflow-ai/cmux#keyboard-shortcuts) をご覧ください。
 
-| ショートカット | アクション |
-|----------|--------|
-| ⌘ T | 新規サーフェス |
-| ⌘ ⇧ ] | 次のサーフェス |
-| ⌘ ⇧ [ | 前のサーフェス |
-| ⌃ Tab | 次のサーフェス |
-| ⌃ ⇧ Tab | 前のサーフェス |
-| ⌃ 1–8 | サーフェス1–8にジャンプ |
-| ⌃ 9 | 最後のサーフェスにジャンプ |
-| ⌘ W | サーフェスを閉じる |
+## 設定
 
-### 分割ペイン
-
-| ショートカット | アクション |
-|----------|--------|
-| ⌘ D | 右に分割 |
-| ⌘ ⇧ D | 下に分割 |
-| ⌥ ⌘ ← → ↑ ↓ | 方向でペインにフォーカス |
-| ⌘ ⇧ H | フォーカス中のパネルを点滅 |
-
-### ブラウザ
-
-ブラウザの開発者ツールのショートカットはSafariのデフォルトに従い、`設定 → キーボードショートカット`でカスタマイズできます。
-
-| ショートカット | アクション |
-|----------|--------|
-| ⌘ ⇧ L | 分割でブラウザを開く |
-| ⌘ L | アドレスバーにフォーカス |
-| ⌘ [ | 戻る |
-| ⌘ ] | 進む |
-| ⌘ R | ページを再読み込み |
-| ⌥ ⌘ I | 開発者ツールの表示切替（Safariデフォルト） |
-| ⌥ ⌘ C | JavaScriptコンソールを表示（Safariデフォルト） |
-
-### 通知
-
-| ショートカット | アクション |
-|----------|--------|
-| ⌘ I | 通知パネルを表示 |
-| ⌘ ⇧ U | 最新の未読にジャンプ |
-
-### 検索
-
-| ショートカット | アクション |
-|----------|--------|
-| ⌘ F | 検索 |
-| ⌘ G / ⌘ ⇧ G | 次を検索 / 前を検索 |
-| ⌘ ⇧ F | 検索バーを非表示 |
-| ⌘ E | 選択範囲で検索 |
-
-### ターミナル
-
-| ショートカット | アクション |
-|----------|--------|
-| ⌘ K | スクロールバックをクリア |
-| ⌘ C | コピー（選択時） |
-| ⌘ V | ペースト |
-| ⌘ + / ⌘ - | フォントサイズを拡大 / 縮小 |
-| ⌘ 0 | フォントサイズをリセット |
-
-### ウィンドウ
-
-| ショートカット | アクション |
-|----------|--------|
-| ⌘ ⇧ N | 新規ウィンドウ |
-| ⌘ , | 設定 |
-| ⌘ ⇧ , | 設定を再読み込み |
-| ⌘ Q | 終了 |
-
-## ナイトリービルド
-
-[cmux NIGHTLYをダウンロード](https://github.com/manaflow-ai/cmux/releases/download/nightly/cmux-nightly-macos.dmg)
-
-cmux NIGHTLYは独自のバンドルIDを持つ別のアプリなので、安定版と並行して実行できます。最新の`main`コミットから自動的にビルドされ、独自のSparkleフィード経由で自動更新されます。
-
-## セッション復元（現在の動作）
-
-再起動時、cmuxは現在アプリのレイアウトとメタデータのみを復元します：
-- ウィンドウ/ワークスペース/ペインのレイアウト
-- 作業ディレクトリ
-- ターミナルのスクロールバック（ベストエフォート）
-- ブラウザのURLとナビゲーション履歴
-
-cmuxはターミナルアプリ内のライブプロセスの状態を復元**しません**。例えば、アクティブなClaude Code/tmux/vimセッションは再起動後にまだ再開されません。
-
-## Star History
-
-<a href="https://star-history.com/#manaflow-ai/cmux&Date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=manaflow-ai/cmux&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=manaflow-ai/cmux&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=manaflow-ai/cmux&type=Date" width="600" />
- </picture>
-</a>
-
-## コントリビューション
-
-参加方法：
-
-- Xでフォロー：[@manaflowai](https://x.com/manaflowai)、[@lawrencecchen](https://x.com/lawrencecchen)、[@austinywang](https://x.com/austinywang)
-- [Discord](https://discord.gg/xsgFEVrWCZ)で会話に参加
-- [GitHubのIssues](https://github.com/manaflow-ai/cmux/issues)や[ディスカッション](https://github.com/manaflow-ai/cmux/discussions)に参加
-- cmuxで何を構築しているか教えてください
-
-## コミュニティ
-
-- [Discord](https://discord.gg/xsgFEVrWCZ)
-- [GitHub](https://github.com/manaflow-ai/cmux)
-- [X / Twitter](https://twitter.com/manaflowai)
-- [YouTube](https://www.youtube.com/channel/UCAa89_j-TWkrXfk9A3CbASw)
-- [LinkedIn](https://www.linkedin.com/company/manaflow-ai/)
-- [Reddit](https://www.reddit.com/r/cmux/)
-
-## Founder's Edition
-
-cmuxは無料でオープンソースであり、今後もそうあり続けます。開発をサポートし、次に来る機能への早期アクセスを得たい方へ：
-
-**[Founder's Editionを入手](https://buy.stripe.com/3cI00j2Ld0it5OU33r5EY0q)**
-
-- **機能リクエスト/バグ修正の優先対応**
-- **早期アクセス：すべてのワークスペース、タブ、パネルのコンテキストを提供するcmux AI**
-- **早期アクセス：デスクトップと携帯電話間でターミナルを同期するiOSアプリ**
-- **早期アクセス：クラウドVM**
-- **早期アクセス：ボイスモード**
-- **私の個人的なiMessage/WhatsApp**
+| 設定 | デフォルト | 説明 |
+|---------|---------|-------------|
+| モードを有効化 | オン | テキストボックス入力を有効化する |
+| Enterで送信 | オン | Returnで送信、Shift+Returnで改行（オフで逆） |
+| Escapeキー | ESCキーを送信 | ESCキーの動作（ターミナルにフォーカス / ESCキーを送信） |
+| テキストボックス入力の表示/非表示 | ⌘⌥T | 表示/非表示のキーボードショートカット |
 
 ## ライセンス
 
-このプロジェクトはGNU Affero General Public License v3.0以降（`AGPL-3.0-or-later`）の下でライセンスされています。
-
-全文は`LICENSE`をご覧ください。
+cmux と同じ — [AGPL-3.0-or-later](LICENSE)。

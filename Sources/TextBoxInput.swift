@@ -88,7 +88,11 @@ private enum TextBoxInputViewLayout {
     /// Placeholder text shown when the TextBox is empty.
     /// The send key name changes based on the Enter-to-Send setting.
     static func placeholderText(enterToSend: Bool) -> String {
-        return "Commands or prompts here… Shift+Return \(enterToSend ? "for newline" : "to send")"
+        if enterToSend {
+            return String(localized: "textbox.placeholder.enterToSend", defaultValue: "Commands or prompts here… Shift+Return for newline")
+        } else {
+            return String(localized: "textbox.placeholder.enterToNewline", defaultValue: "Commands or prompts here… Shift+Return to send")
+        }
     }
 }
 
@@ -105,6 +109,53 @@ private enum TextBoxBehavior {
     static let emptyReturnKeyDelayMs: Int = 0
 }
 
+// MARK: - Key Events
+
+/// Events dispatched from the TextBox to its parent for terminal forwarding.
+enum TextBoxKeyEvent {
+    /// User pressed Return/Shift+Return to submit text.
+    case submit
+    /// User pressed Escape.
+    case escape
+    /// A named key to forward to the terminal (arrows, Tab, Backspace).
+    case key(TerminalKey)
+    /// A Ctrl+key combination to forward as a raw NSEvent.
+    case control(NSEvent)
+}
+
+// MARK: - Terminal Key
+
+/// Named keys that TextBox forwards to the terminal via synthetic NSEvents.
+enum TerminalKey {
+    case returnKey, arrowUp, arrowDown, arrowLeft, arrowRight, tab, backspace, escape
+
+    var characters: String {
+        switch self {
+        case .returnKey: return "\r"
+        case .arrowUp:   return "\u{F700}"
+        case .arrowDown: return "\u{F701}"
+        case .arrowLeft: return "\u{F702}"
+        case .arrowRight: return "\u{F703}"
+        case .tab:       return "\t"
+        case .backspace: return "\u{7F}"
+        case .escape:    return "\u{1B}"
+        }
+    }
+
+    var keyCode: UInt16 {
+        switch self {
+        case .returnKey: return 36
+        case .arrowUp:   return 126
+        case .arrowDown: return 125
+        case .arrowLeft: return 123
+        case .arrowRight: return 124
+        case .tab:       return 48
+        case .backspace: return 51
+        case .escape:    return 53
+        }
+    }
+}
+
 // MARK: - Settings
 
 /// Settings for TextBox Input Mode
@@ -114,24 +165,31 @@ enum TextBoxInputSettings {
     static let escapeBehaviorKey = "textBoxEscapeBehavior"
 
     static let defaultEnabled = true
-    static let defaultEnterToSend = false
+    static let defaultEnterToSend = true
     static let defaultEscapeBehavior = TextBoxEscapeBehavior.sendEscape
 
     /// Opacity applied to settings rows when TextBox is disabled.
     static let disabledSettingsOpacity: Double = 0.5
 
+    /// Reset all TextBox settings to defaults via UserDefaults.
+    static func resetAll() {
+        UserDefaults.standard.removeObject(forKey: enabledKey)
+        UserDefaults.standard.removeObject(forKey: enterToSendKey)
+        UserDefaults.standard.removeObject(forKey: escapeBehaviorKey)
+    }
+
+    private static func bool(forKey key: String, default defaultValue: Bool) -> Bool {
+        UserDefaults.standard.object(forKey: key) == nil
+            ? defaultValue
+            : UserDefaults.standard.bool(forKey: key)
+    }
+
     static func isEnabled() -> Bool {
-        if UserDefaults.standard.object(forKey: enabledKey) == nil {
-            return defaultEnabled
-        }
-        return UserDefaults.standard.bool(forKey: enabledKey)
+        bool(forKey: enabledKey, default: defaultEnabled)
     }
 
     static func isEnterToSend() -> Bool {
-        if UserDefaults.standard.object(forKey: enterToSendKey) == nil {
-            return defaultEnterToSend
-        }
-        return UserDefaults.standard.bool(forKey: enterToSendKey)
+        bool(forKey: enterToSendKey, default: defaultEnterToSend)
     }
 
     static func escapeBehavior() -> TextBoxEscapeBehavior {
@@ -192,11 +250,11 @@ enum TextBoxSubmit {
             ? TextBoxBehavior.emptyReturnKeyDelayMs
             : delayMs
         if effectiveDelayMs <= 0 {
-            surface.sendReturnKey()
+            surface.sendKey(.returnKey)
         } else {
             let delay = TimeInterval(effectiveDelayMs) / 1000.0
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak surface] in
-                surface?.sendReturnKey()
+                surface?.sendKey(.returnKey)
             }
         }
     }
@@ -240,22 +298,23 @@ struct TextBoxInputContainer: View {
                 text: $text,
                 enterToSend: enterToSend,
                 textViewHeight: $textViewHeight,
-                onSubmit: submit,
-                onEscape: {
-                    switch TextBoxInputSettings.escapeBehavior() {
-                    case .focusTerminal:
-                        surface.focusTerminalView()
-                    case .sendEscape:
-                        surface.sendEscapeKey()
+                onKeyEvent: { event in
+                    switch event {
+                    case .submit:
+                        submit()
+                    case .escape:
+                        switch TextBoxInputSettings.escapeBehavior() {
+                        case .focusTerminal:
+                            surface.focusTerminalView()
+                        case .sendEscape:
+                            surface.sendKey(.escape)
+                        }
+                    case .key(let key):
+                        surface.sendKey(key)
+                    case .control(let nsEvent):
+                        surface.forwardKeyEvent(nsEvent)
                     }
                 },
-                onArrowUp: { surface.sendArrowUpKey() },
-                onArrowDown: { surface.sendArrowDownKey() },
-                onArrowLeft: { surface.sendArrowLeftKey() },
-                onArrowRight: { surface.sendArrowRightKey() },
-                onTab: { surface.sendTabKey() },
-                onBackspace: { surface.sendBackspaceKey() },
-                onControlKey: { event in surface.forwardKeyEvent(event) },
                 terminalBackgroundColor: terminalBackgroundColor,
                 terminalForegroundColor: terminalForegroundColor,
                 terminalFont: terminalFont
@@ -293,15 +352,7 @@ struct TextBoxInputView: NSViewRepresentable {
     @Binding var text: String
     let enterToSend: Bool
     @Binding var textViewHeight: CGFloat
-    let onSubmit: () -> Void
-    let onEscape: () -> Void
-    let onArrowUp: () -> Void
-    let onArrowDown: () -> Void
-    let onArrowLeft: () -> Void
-    let onArrowRight: () -> Void
-    let onTab: () -> Void
-    let onBackspace: () -> Void
-    let onControlKey: (NSEvent) -> Void
+    let onKeyEvent: (TextBoxKeyEvent) -> Void
     let terminalBackgroundColor: NSColor
     let terminalForegroundColor: NSColor
     let terminalFont: NSFont
@@ -458,26 +509,21 @@ struct TextBoxInputView: NSViewRepresentable {
                 return handleNewline(shifted: shifted)
             }
             if selector == #selector(NSResponder.cancelOperation(_:)) {
-                parent.onEscape()
+                parent.onKeyEvent(.escape)
                 return true
             }
-            if selector == #selector(NSResponder.moveUp(_:)) {
-                return handleEmpty { parent.onArrowUp() }
-            }
-            if selector == #selector(NSResponder.moveDown(_:)) {
-                return handleEmpty { parent.onArrowDown() }
-            }
-            if selector == #selector(NSResponder.moveLeft(_:)) {
-                return handleEmpty { parent.onArrowLeft() }
-            }
-            if selector == #selector(NSResponder.moveRight(_:)) {
-                return handleEmpty { parent.onArrowRight() }
-            }
-            if selector == #selector(NSResponder.insertTab(_:)) {
-                return handleEmpty { parent.onTab() }
-            }
-            if selector == #selector(NSResponder.deleteBackward(_:)) {
-                return handleEmpty { parent.onBackspace() }
+
+            // Map selectors to terminal keys — forwarded only when TextBox is empty.
+            let keyMap: [Selector: TerminalKey] = [
+                #selector(NSResponder.moveUp(_:)):         .arrowUp,
+                #selector(NSResponder.moveDown(_:)):       .arrowDown,
+                #selector(NSResponder.moveLeft(_:)):       .arrowLeft,
+                #selector(NSResponder.moveRight(_:)):      .arrowRight,
+                #selector(NSResponder.insertTab(_:)):      .tab,
+                #selector(NSResponder.deleteBackward(_:)): .backspace,
+            ]
+            if let key = keyMap[selector] {
+                return handleEmpty { parent.onKeyEvent(.key(key)) }
             }
             return false
         }
@@ -501,7 +547,7 @@ struct TextBoxInputView: NSViewRepresentable {
             }
 
             if shouldSend {
-                parent.onSubmit()
+                parent.onKeyEvent(.submit)
                 return true
             }
             textView?.insertNewlineIgnoringFieldEditor(nil)
@@ -605,7 +651,7 @@ final class InputTextView: NSTextView {
     override func keyDown(with event: NSEvent) {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags.contains(.control) {
-            inputCoordinator?.parent.onControlKey(event)
+            inputCoordinator?.parent.onKeyEvent(.control(event))
             return
         }
         super.keyDown(with: event)
@@ -616,5 +662,16 @@ final class InputTextView: NSTextView {
             return
         }
         super.doCommand(by: selector)
+    }
+}
+
+// MARK: - Settings View Modifier
+
+extension View {
+    /// Dims and disables a settings row when TextBox is not enabled.
+    func textBoxSettingsDisabled(_ isDisabled: Bool) -> some View {
+        self
+            .disabled(isDisabled)
+            .opacity(isDisabled ? TextBoxInputSettings.disabledSettingsOpacity : 1.0)
     }
 }
