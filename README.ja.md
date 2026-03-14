@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <video src="./docs/assets/textbox-top.mp4" autoplay loop muted playsinline></video>
+  <video src="https://github.com/user-attachments/assets/9e83cc01-97a2-4c06-90cd-1c98422e9f3a" autoplay loop muted playsinline></video>
 </p>
 
 ## なぜテキストボックス？
@@ -35,7 +35,7 @@
 Ctrl+キー（Ctrl+C、Ctrl+D、Ctrl+Z など）や ESCキー は、入力中でも関係なく常にターミナルに送られます。
 </td>
 <td width="60%">
-<video src="./docs/assets/textbox-seamless.mp4" autoplay loop muted playsinline width="100%"></video>
+<video src="https://github.com/user-attachments/assets/f305e06e-a55e-4477-93f2-11d3bd17d03a" autoplay loop muted playsinline width="100%"></video>
 </td>
 </tr>
 <tr>
@@ -53,7 +53,7 @@ Ctrl+キー（Ctrl+C、Ctrl+D、Ctrl+Z など）や ESCキー は、入力中で
 テキストボックスは使い慣れたOSネイティブのものを使用。矢印キー、選択、コピー＆ペースト、いつもの操作がそのまま使えます。
 </td>
 <td width="60%">
-<video src="./docs/assets/textbox-edit.mp4" autoplay loop muted playsinline width="100%"></video>
+<video src="https://github.com/user-attachments/assets/a7777bfa-f63f-4273-bf5a-2778bea643dd" autoplay loop muted playsinline width="100%"></video>
 </td>
 </tr>
 <tr>
@@ -62,7 +62,7 @@ Ctrl+キー（Ctrl+C、Ctrl+D、Ctrl+Z など）や ESCキー は、入力中で
 エージェントの起動、プロンプト編集、エージェントへの返答、処理の中断。テキストボックスの中にいたままで操作できます。もちろん他のターミナルエージェントとも。
 </td>
 <td width="60%">
-<video src="./docs/assets/textbox-agent.mp4" autoplay loop muted playsinline width="100%"></video>
+<video src="https://github.com/user-attachments/assets/69e0cea8-c975-49b3-87cc-711cf64b2ff4" autoplay loop muted playsinline width="100%"></video>
 </td>
 </tr>
 <tr>

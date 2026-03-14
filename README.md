@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <video src="./docs/assets/textbox-top.mp4" autoplay loop muted playsinline></video>
+  <video src="https://github.com/user-attachments/assets/9e83cc01-97a2-4c06-90cd-1c98422e9f3a" autoplay loop muted playsinline></video>
 </p>
 
 ## Why TextBox?
@@ -35,7 +35,7 @@ When the TextBox is empty, arrow keys, Tab, and Backspace pass through to the te
 Ctrl+key combinations (Ctrl+C, Ctrl+D, Ctrl+Z, etc.) and Escape are always forwarded regardless of content.
 </td>
 <td width="60%">
-<video src="./docs/assets/textbox-seamless.mp4" autoplay loop muted playsinline width="100%"></video>
+<video src="https://github.com/user-attachments/assets/f305e06e-a55e-4477-93f2-11d3bd17d03a" autoplay loop muted playsinline width="100%"></video>
 </td>
 </tr>
 <tr>
@@ -53,7 +53,7 @@ Toggle the TextBox with a shortcut — focus moves smoothly between the input ba
 The TextBox uses your OS-native text input. Arrow keys, selection, copy & paste — the same operations you're used to, just working.
 </td>
 <td width="60%">
-<video src="./docs/assets/textbox-edit.mp4" autoplay loop muted playsinline width="100%"></video>
+<video src="https://github.com/user-attachments/assets/a7777bfa-f63f-4273-bf5a-2778bea643dd" autoplay loop muted playsinline width="100%"></video>
 </td>
 </tr>
 <tr>
@@ -62,7 +62,7 @@ The TextBox uses your OS-native text input. Arrow keys, selection, copy & paste 
 Launch an agent, edit prompts, reply to questions, interrupt a task — all without leaving the TextBox. Works with other terminal agents too, of course.
 </td>
 <td width="60%">
-<video src="./docs/assets/textbox-agent.mp4" autoplay loop muted playsinline width="100%"></video>
+<video src="https://github.com/user-attachments/assets/69e0cea8-c975-49b3-87cc-711cf64b2ff4" autoplay loop muted playsinline width="100%"></video>
 </td>
 </tr>
 <tr>
