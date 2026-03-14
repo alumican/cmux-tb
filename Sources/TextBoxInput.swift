@@ -217,7 +217,10 @@ struct TextBoxInputView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSView {
-        // Container view holds the border so it stays fixed while content scrolls
+        // Border is on a container NSView, not on the NSScrollView directly.
+        // Setting `wantsLayer = true` + `layer?.borderWidth` on NSScrollView
+        // does not render a border (its layer management conflicts with
+        // direct layer property access). A plain NSView wrapper works reliably.
         let container = NSView()
         container.wantsLayer = true
         container.layer?.borderWidth = TextBoxLayout.borderWidth
@@ -339,6 +342,9 @@ struct TextBoxInputView: NSViewRepresentable {
         }
 
         /// Forward action to terminal only when TextBox is empty.
+        /// When the user is typing text, arrow keys etc. should navigate
+        /// within the TextBox normally. Forwarding only when empty prevents
+        /// accidentally losing in-progress input.
         private func handleEmpty(_ action: () -> Void) -> Bool {
             guard let textView = textView, textView.string.isEmpty else { return false }
             action()
@@ -366,12 +372,26 @@ struct TextBoxInputView: NSViewRepresentable {
 
 // MARK: - InputTextView
 
-/// Custom NSTextView subclass that routes doCommandBy to the coordinator.
+/// Custom NSTextView subclass that routes key events to the coordinator.
+///
+/// Two separate interception layers are used intentionally:
+///
+/// 1. **`keyDown`** — intercepts Ctrl+key *before* AppKit interprets them.
+///    Ctrl+C, Ctrl+D, etc. must always reach the terminal regardless of
+///    TextBox content. If we waited for `doCommandBySelector`, AppKit
+///    would convert them into selectors and they wouldn't reach the
+///    terminal correctly.
+///
+/// 2. **`doCommandBySelector`** — handles interpreted commands (arrows,
+///    Tab, Backspace, Enter, Escape). These are forwarded to the terminal
+///    only when the TextBox is empty (except Enter/Escape which are always
+///    handled). Using `doCommandBySelector` instead of raw `keyDown`
+///    forwarding avoids `^^` garbage characters that appear when
+///    forwarding raw NSEvents.
 final class InputTextView: NSTextView {
     weak var inputCoordinator: TextBoxInputView.Coordinator?
 
     override func keyDown(with event: NSEvent) {
-        // Ctrl+key always goes to terminal regardless of TextBox content
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags.contains(.control) {
             inputCoordinator?.parent.onControlKey(event)

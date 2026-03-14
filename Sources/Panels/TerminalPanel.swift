@@ -46,15 +46,28 @@ final class TerminalPanel: Panel, ObservableObject {
         }
     }
 
-    /// Send text through TextBox: writes to PTY.
-    /// Delays the Return key slightly to ensure the bracket paste has been
-    /// fully processed by the receiving application before submission.
+    /// Send text through TextBox: writes to PTY via bracket paste, then
+    /// sends Return as a separate synthetic key event after a delay.
+    ///
+    /// **Why not `sendText(text + "\r")` or `sendText(text + "\n")`?**
+    /// `sendText` wraps content in bracket paste (`\x1b[200~…\x1b[201~`).
+    /// Applications that enable bracket paste mode (zsh, Claude CLI, etc.)
+    /// treat `\r`/`\n` inside the paste as literal characters, not as
+    /// command execution. Return must be sent as a separate synthetic key
+    /// event *outside* the paste sequence.
+    /// Note: `sendText(text + "\n")` does work for apps that don't use
+    /// bracket paste (e.g., node REPL), but fails for shell and Claude CLI.
+    ///
+    /// **Why 200ms delay?**
+    /// Claude CLI shows "pasting text…" while processing bracket paste
+    /// (~100ms). If Return arrives before processing finishes, it is
+    /// silently ignored. 50ms and 100ms were tested and are insufficient.
+    /// 200ms is the minimum reliable value.
     func sendTextFromTextBox(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .newlines)
         if !trimmed.isEmpty {
             surface.sendText(trimmed)
         }
-        // Delay to let bracket paste be fully processed before sending Enter
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
             self?.surface.sendReturnKey()
         }

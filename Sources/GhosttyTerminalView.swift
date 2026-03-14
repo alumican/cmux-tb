@@ -3110,8 +3110,20 @@ final class TerminalSurface: Identifiable, ObservableObject {
     }
 
     /// Send a synthetic key event through AppKit, simulating a physical
-    /// key press. This goes through the same NSEvent → keyDown path as a real
-    /// keystroke, ensuring compatibility with all terminal applications.
+    /// key press. Creates an `NSEvent.keyDown` and delivers it via
+    /// `view.keyDown(with:)`, going through AppKit's full key handling path
+    /// (which internally routes to `ghostty_surface_key`).
+    ///
+    /// **Why synthetic NSEvent via `view.keyDown` instead of calling
+    /// `ghostty_surface_key` directly?**
+    /// Going through AppKit's standard key handling ensures the correct
+    /// event context (window, focus state, modifier flags) is set up.
+    /// Calling the C API directly bypasses this and can produce unreliable
+    /// results depending on focus state.
+    ///
+    /// **Why keyDown only (no keyUp)?**
+    /// Sending both keyDown + keyUp produces `^^` garbage characters in the
+    /// terminal output. keyDown alone is sufficient for key recognition.
     func sendSyntheticKey(characters: String, keyCode: UInt16, modifiers: NSEvent.ModifierFlags = []) {
         guard let view = attachedView, let window = view.window else { return }
         if let keyDown = NSEvent.keyEvent(
@@ -3129,6 +3141,15 @@ final class TerminalSurface: Identifiable, ObservableObject {
             view.keyDown(with: keyDown)
         }
     }
+
+    // Individual key methods for TextBox → terminal forwarding.
+    //
+    // Why individual methods instead of `forwardKeyEvent(rawEvent)`?
+    // Forwarding raw NSEvents via `view.keyDown(with:)` produces `^^`
+    // garbage characters. By routing through `doCommandBySelector` in
+    // InputTextView → coordinator → these individual synthetic key
+    // methods, we go through AppKit's standard key interpretation path,
+    // which avoids the garbage character issue.
 
     func sendReturnKey() {
         sendSyntheticKey(characters: "\r", keyCode: 36)
@@ -3159,6 +3180,8 @@ final class TerminalSurface: Identifiable, ObservableObject {
     }
 
     /// Forward an NSEvent directly to the terminal view.
+    /// Used only for Ctrl+key combinations, which are already proper
+    /// NSEvents from the system and don't produce garbage characters.
     func forwardKeyEvent(_ event: NSEvent) {
         guard let view = attachedView else { return }
         view.keyDown(with: event)
