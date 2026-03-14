@@ -3179,6 +3179,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
         sendSyntheticKey(characters: "\u{7F}", keyCode: 51)
     }
 
+    // [TextBox]
     func sendEscapeKey() {
         sendSyntheticKey(characters: "\u{1B}", keyCode: 53)
     }

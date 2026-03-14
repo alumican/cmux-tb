@@ -362,9 +362,10 @@ struct TextBoxInputView: NSViewRepresentable {
         textView.inputCoordinator = context.coordinator
         textView.enterToSend = enterToSend
 
-        // Match terminal appearance
-        textView.drawsBackground = true
-        textView.backgroundColor = terminalBackgroundColor
+        // Match terminal appearance — background is drawn by the outer
+        // SwiftUI .background() to avoid double-compositing when the
+        // terminal uses background-opacity < 1.
+        textView.drawsBackground = false
         textView.insertionPointColor = terminalForegroundColor
         textView.font = adjustedFont
         textView.typingAttributes = makeTypingAttributes()
@@ -406,7 +407,6 @@ struct TextBoxInputView: NSViewRepresentable {
         }
         // Keep enterToSend and colors in sync
         textView.enterToSend = enterToSend
-        textView.backgroundColor = terminalBackgroundColor
         textView.insertionPointColor = terminalForegroundColor
         textView.typingAttributes = makeTypingAttributes()
         let isFocused = textView.window?.firstResponder === textView

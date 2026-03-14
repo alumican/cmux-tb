@@ -29,7 +29,9 @@ struct TerminalPanelView: View {
 
     var body: some View {
         let config = GhosttyConfig.load()
+        // [TextBox] Apply background-opacity so TextBox matches the terminal
         let runtimeBg = GhosttyApp.shared.defaultBackgroundColor
+            .withAlphaComponent(GhosttyApp.shared.defaultBackgroundOpacity)
         let runtimeFg = config.foregroundColor
         let font = NSFont.monospacedSystemFont(ofSize: config.fontSize, weight: .regular)
 
