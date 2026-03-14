@@ -53,8 +53,8 @@ final class TerminalPanel: Panel, ObservableObject {
             commandHistory.add(trimmed)
             surface.sendText(trimmed)
         }
-        // Delay to let bracket paste complete before sending Enter key event
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+        // Delay to let bracket paste be fully processed before sending Enter
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
             self?.surface.sendReturnKey()
         }
     }
