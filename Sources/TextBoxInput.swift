@@ -39,13 +39,6 @@
 //
 // upstream (manaflow-ai/cmux) ファイルへの追加コードには `[TextBox]` マークを
 // 付けている。`grep -r '\[TextBox\]' Sources/` で全箇所を一覧できる。
-//
-// ## TODO
-//
-// - トグルで TextBox を閉じたとき、入力中のテキストがあればターミナルの
-//   プロンプトに転送し（実行はしない）、末尾にキャレットを置く
-// - トグルで TextBox を開いたとき、ターミナルのプロンプトに入力中のテキストが
-//   あれば TextBox に移し、ターミナル側の入力内容はクリアする
 
 import AppKit
 import SwiftUI
