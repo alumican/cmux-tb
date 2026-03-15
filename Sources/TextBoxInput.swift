@@ -418,6 +418,7 @@ struct TextBoxInputView: NSViewRepresentable {
         // terminal uses background-opacity < 1.
         textView.drawsBackground = false
         textView.insertionPointColor = terminalForegroundColor
+        textView.textColor = terminalForegroundColor
         textView.font = adjustedFont
         textView.typingAttributes = makeTypingAttributes()
         textView.defaultParagraphStyle = makeParagraphStyle()
@@ -459,6 +460,7 @@ struct TextBoxInputView: NSViewRepresentable {
         // Keep enterToSend and colors in sync
         textView.enterToSend = enterToSend
         textView.insertionPointColor = terminalForegroundColor
+        textView.textColor = terminalForegroundColor
         textView.typingAttributes = makeTypingAttributes()
         let isFocused = textView.window?.firstResponder === textView
         let opacity = isFocused
@@ -634,6 +636,13 @@ final class InputTextView: NSTextView {
             )
             NSString(string: placeholder).draw(at: origin, withAttributes: attrs)
         }
+    }
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        super.mouseDown(with: event)
     }
 
     override func becomeFirstResponder() -> Bool {
