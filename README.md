@@ -76,6 +76,11 @@ Send on Return or Shift+Return? What should ESC do? Customize it to fit your wor
 </tr>
 </table>
 
+### Not yet supported
+
+- **Drag & drop paths** — Drop files or folders into the TextBox to insert their path (planned)
+- **Tab completion in TextBox** — For now, tab completion requires using the terminal input directly
+
 ## Install
 
 ### DMG (recommended)
