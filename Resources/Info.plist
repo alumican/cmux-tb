@@ -122,7 +122,8 @@
 		<true/>
 	</dict>
 	<key>SUFeedURL</key>
-	<string>https://github.com/manaflow-ai/cmux/releases/latest/download/appcast.xml</string>
+	<!-- [TextBox] Point to fork releases to prevent upstream updates overwriting cmux-tb -->
+	<string>https://github.com/alumican/cmux-tb/releases/latest/download/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>$(SPARKLE_PUBLIC_KEY)</string>
 </dict>

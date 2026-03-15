@@ -8953,6 +8953,10 @@ private enum SidebarHelpMenuAction {
     case checkForUpdates
     case sendFeedback
     case welcome
+    // [TextBox] Fork-specific actions
+    case forkChangelog
+    case forkGithub
+    case forkGithubIssues
 }
 
 private struct SidebarFeedbackComposerSheet: View {
@@ -9451,6 +9455,12 @@ private struct SidebarHelpMenuButton: View {
     private let githubURL = URL(string: "https://github.com/manaflow-ai/cmux")
     private let githubIssuesURL = URL(string: "https://github.com/manaflow-ai/cmux/issues")
     private let discordURL = URL(string: "https://discord.gg/xsgFEVrWCZ")
+
+    // [TextBox] Fork URLs
+    private let forkChangelogURL = URL(string: "https://github.com/alumican/cmux-tb/releases")
+    private let forkGithubURL = URL(string: "https://github.com/alumican/cmux-tb")
+    private let forkGithubIssuesURL = URL(string: "https://github.com/alumican/cmux-tb/issues")
+
     private let helpTitle = String(localized: "sidebar.help.button", defaultValue: "Help")
     private let buttonSize: CGFloat = 22
     private let iconSize: CGFloat = 11
@@ -9500,60 +9510,81 @@ private struct SidebarHelpMenuButton: View {
                 accessibilityIdentifier: "SidebarHelpMenuOptionWelcome",
                 isExternalLink: false
             )
-            helpOptionButton(
-                title: String(localized: "sidebar.help.sendFeedback", defaultValue: "Send Feedback"),
-                action: .sendFeedback,
-                accessibilityIdentifier: "SidebarHelpMenuOptionSendFeedback",
-                isExternalLink: false,
-                shortcutHint: sendFeedbackShortcutHint,
-                trailingSystemImage: "bubble.left.and.text.bubble.right"
-            )
+            // [TextBox] Send Feedback hidden — would go to upstream project.
+            // helpOptionButton(
+            //     title: String(localized: "sidebar.help.sendFeedback", defaultValue: "Send Feedback"),
+            //     action: .sendFeedback,
+            //     accessibilityIdentifier: "SidebarHelpMenuOptionSendFeedback",
+            //     isExternalLink: false,
+            //     shortcutHint: sendFeedbackShortcutHint,
+            //     trailingSystemImage: "bubble.left.and.text.bubble.right"
+            // )
             helpOptionButton(
                 title: String(localized: "settings.section.keyboardShortcuts", defaultValue: "Keyboard Shortcuts"),
                 action: .keyboardShortcuts,
                 accessibilityIdentifier: "SidebarHelpMenuOptionKeyboardShortcuts",
                 isExternalLink: false
             )
-            if docsURL != nil {
-                helpOptionButton(
-                    title: String(localized: "about.docs", defaultValue: "Docs"),
-                    action: .docs,
-                    accessibilityIdentifier: "SidebarHelpMenuOptionDocs",
-                    isExternalLink: true
-                )
-            }
             if changelogURL != nil {
                 helpOptionButton(
-                    title: String(localized: "sidebar.help.changelog", defaultValue: "Changelog"),
+                    title: "Changelog (cmux)", // [TextBox] Label changed from "Changelog"
                     action: .changelog,
                     accessibilityIdentifier: "SidebarHelpMenuOptionChangelog",
                     isExternalLink: true
                 )
             }
+            // [TextBox] Fork menu item added
+            if forkChangelogURL != nil {
+                helpOptionButton(
+                    title: "Changelog (cmux-tb)",
+                    action: .forkChangelog,
+                    accessibilityIdentifier: "SidebarHelpMenuOptionForkChangelog",
+                    isExternalLink: true
+                )
+            }
             if githubURL != nil {
                 helpOptionButton(
-                    title: String(localized: "about.github", defaultValue: "GitHub"),
+                    title: "GitHub (cmux)", // [TextBox] Label changed from "GitHub"
                     action: .github,
                     accessibilityIdentifier: "SidebarHelpMenuOptionGitHub",
                     isExternalLink: true
                 )
             }
+            // [TextBox] Fork menu item added
+            if forkGithubURL != nil {
+                helpOptionButton(
+                    title: "GitHub (cmux-tb)",
+                    action: .forkGithub,
+                    accessibilityIdentifier: "SidebarHelpMenuOptionForkGitHub",
+                    isExternalLink: true
+                )
+            }
             if githubIssuesURL != nil {
                 helpOptionButton(
-                    title: String(localized: "sidebar.help.githubIssues", defaultValue: "GitHub Issues"),
+                    title: "GitHub Issues (cmux)", // [TextBox] Label changed from "GitHub Issues"
                     action: .githubIssues,
                     accessibilityIdentifier: "SidebarHelpMenuOptionGitHubIssues",
                     isExternalLink: true
                 )
             }
-            if discordURL != nil {
+            // [TextBox] Fork menu item added
+            if forkGithubIssuesURL != nil {
                 helpOptionButton(
-                    title: String(localized: "sidebar.help.discord", defaultValue: "Discord"),
-                    action: .discord,
-                    accessibilityIdentifier: "SidebarHelpMenuOptionDiscord",
+                    title: "GitHub Issues (cmux-tb)",
+                    action: .forkGithubIssues,
+                    accessibilityIdentifier: "SidebarHelpMenuOptionForkGitHubIssues",
                     isExternalLink: true
                 )
             }
+            // [TextBox] Upstream Discord hidden — no fork equivalent yet.
+            // if discordURL != nil {
+            //     helpOptionButton(
+            //         title: String(localized: "sidebar.help.discord", defaultValue: "Discord"),
+            //         action: .discord,
+            //         accessibilityIdentifier: "SidebarHelpMenuOptionDiscord",
+            //         isExternalLink: true
+            //     )
+            // }
             helpOptionButton(
                 title: String(localized: "command.checkForUpdates.title", defaultValue: "Check for Updates"),
                 action: .checkForUpdates,
@@ -9661,6 +9692,18 @@ private struct SidebarHelpMenuButton: View {
                     appDelegate.openWelcomeWorkspace()
                 }
             }
+        // [TextBox] Fork-specific action
+        case .forkChangelog:
+            guard let forkChangelogURL else { return }
+            NSWorkspace.shared.open(forkChangelogURL)
+        // [TextBox] Fork-specific action
+        case .forkGithub:
+            guard let forkGithubURL else { return }
+            NSWorkspace.shared.open(forkGithubURL)
+        // [TextBox] Fork-specific action
+        case .forkGithubIssues:
+            guard let forkGithubIssuesURL else { return }
+            NSWorkspace.shared.open(forkGithubIssuesURL)
         }
     }
 
