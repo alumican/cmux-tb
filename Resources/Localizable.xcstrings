@@ -97,7 +97,7 @@
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "cmux"
+            "value": "cmux + TextBox"
           }
         },
         "ko": {
@@ -436,7 +436,7 @@
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "Ghosttyベースの縦タブ付きターミナルと\nmacOS用通知パネル。"
+            "value": "cmux にテキストボックス入力モードを組み込んだフォーク"
           }
         },
         "ko": {
