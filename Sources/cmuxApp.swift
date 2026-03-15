@@ -2104,12 +2104,10 @@ private struct AboutPanelView: View {
 
             VStack(alignment: .center, spacing: 32) {
                 VStack(alignment: .center, spacing: 8) {
-                    // [TextBox]
-                    Text(String(localized: "about.appName", defaultValue: "cmux + TextBox"))
+                    Text(String(localized: "about.appName", defaultValue: "cmux"))
                         .bold()
                         .font(.title)
-                    // [TextBox]
-                    Text(String(localized: "about.description", defaultValue: "A fork of cmux with a built-in TextBox input mode."))
+                    Text(String(localized: "about.description", defaultValue: "A Ghostty-based terminal with vertical tabs\nand a notification panel for macOS."))
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
                         .font(.caption)
@@ -2136,14 +2134,12 @@ private struct AboutPanelView: View {
 
                 HStack(spacing: 8) {
                     if let url = docsURL {
-                        // [TextBox]
-                        Button(String(localized: "about.docs", defaultValue: "Docs (cmux)")) {
+                        Button(String(localized: "about.docs", defaultValue: "Docs")) {
                             openURL(url)
                         }
                     }
                     if let url = githubURL {
-                        // [TextBox]
-                        Button(String(localized: "about.github", defaultValue: "GitHub (fork)")) {
+                        Button(String(localized: "about.github", defaultValue: "GitHub")) {
                             openURL(url)
                         }
                     }

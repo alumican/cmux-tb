@@ -73,7 +73,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "cmux"
+            "value": "cmux + TextBox"
           }
         },
         "es": {
@@ -412,7 +412,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "A Ghostty-based terminal with vertical tabs\\nand a notification panel for macOS."
+            "value": "A fork of cmux with a built-in TextBox input mode."
           }
         },
         "es": {
@@ -525,7 +525,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Docs"
+            "value": "Docs (cmux)"
           }
         },
         "es": {
@@ -638,7 +638,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "GitHub"
+            "value": "GitHub (fork)"
           }
         },
         "es": {
