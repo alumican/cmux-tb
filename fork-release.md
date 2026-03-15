@@ -27,10 +27,10 @@ The `scripts/bump-version.sh` only supports `x.y.z` format, so set the version m
 
 ```bash
 # In GhosttyTabs.xcodeproj/project.pbxproj, update both occurrences:
-MARKETING_VERSION = 0.62.2-tb1;
+MARKETING_VERSION = 0.62.2-tb2;
 
 # Bump CURRENT_PROJECT_VERSION (must be monotonically increasing):
-CURRENT_PROJECT_VERSION = 78;
+CURRENT_PROJECT_VERSION = 80;
 ```
 
 ### 3. Local build & verify
@@ -45,10 +45,10 @@ Verify the app launches and TextBox works correctly.
 
 ```bash
 git add GhosttyTabs.xcodeproj/project.pbxproj
-git commit -m "Prepare v0.62.2-tb1 release"
-git tag v0.62.2-tb1
+git commit -m "Bump version to 0.62.2-tb2 (build 80)"
+git tag v0.62.2-tb2
 git push origin main
-git push origin v0.62.2-tb1
+git push origin v0.62.2-tb2
 ```
 
 Pushing a `v*-tb*` tag triggers the `release-tb.yml` workflow, which automatically:
@@ -58,14 +58,41 @@ Pushing a `v*-tb*` tag triggers the `release-tb.yml` workflow, which automatical
 4. Creates a styled DMG (`cmux-tb-macos.dmg`)
 5. Uploads the DMG as a GitHub Release asset
 
-### 5. Monitor the workflow
+### 5. Create a draft release
+
+**Important:** Create the release as a **draft** so the README download link (`releases/latest/download/cmux-tb-macos.dmg`) keeps pointing to the previous release until the DMG is ready.
+
+```bash
+gh release create v0.62.2-tb2 --repo alumican/cmux-tb --draft --title "v0.62.2-tb2" --notes "$(cat <<'EOF'
+## cmux + TextBox v0.62.2-tb2
+
+Based on [cmux v0.62.2](https://github.com/manaflow-ai/cmux/releases/tag/v0.62.2).
+
+### Changes from tb1
+- ...
+
+### Install
+Download `cmux-tb-macos.dmg`, open it, and drag cmux-tb to Applications.
+EOF
+)"
+```
+
+### 6. Monitor the workflow
 
 ```bash
 gh run list --repo alumican/cmux-tb --limit 3
 gh run view <run-id> --repo alumican/cmux-tb
 ```
 
-The signed DMG will be available at:
+### 7. Publish the release
+
+Once the CI workflow completes and the DMG is attached to the draft release:
+
+```bash
+gh release edit v0.62.2-tb2 --repo alumican/cmux-tb --draft=false
+```
+
+The signed DMG will then be available at:
 `https://github.com/alumican/cmux-tb/releases/latest/download/cmux-tb-macos.dmg`
 
 ## Re-releasing a tag
@@ -105,4 +132,5 @@ Requires `brew install create-dmg` and npm `create-dmg` for the background image
 - The DMG asset must be named `cmux-tb-macos.dmg` to match the README download link.
 - Build number (`CURRENT_PROJECT_VERSION`) must always increase — never reuse or go backwards.
 - The `release-tb.yml` workflow only triggers on tags matching `v*-tb*`. The upstream `release.yml` triggers on all `v*` tags but will fail (requires Depot runner).
-- README video assets are hosted via GitHub Issue #1 (`user-attachments` URLs).
+- Always create releases as **draft** first, then publish after CI attaches the DMG. This prevents the README download link from 404-ing during the build.
+- Release notes should link to the upstream cmux version: `[cmux vX.Y.Z](https://github.com/manaflow-ai/cmux/releases/tag/vX.Y.Z)`.
