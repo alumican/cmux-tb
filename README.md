@@ -17,7 +17,7 @@
 
 ## Why TextBox?
 
-If you're used to a normal text editor, typing in a terminal can feel surprisingly awkward. Line breaks, selection, cut & paste — things you do without thinking — just don't work the way you expect.
+If you're not used to terminals, typing in one can sometimes feel awkward. Line breaks, selection, cut & paste — things you do without thinking — just don't work the way you expect.
 
 With this TextBox-enabled terminal, just type what you want. The standard terminal input is still there too, of course.
 
