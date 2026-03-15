@@ -7,9 +7,14 @@
   </a>
 </p>
 
+<br>
+
 <p align="center">
-  English | <a href="README.ja.md"><strong>日本語はこちら</strong></a>
+  English&nbsp;&nbsp;|&nbsp;&nbsp;<a href="README.ja.md"><strong>日本語はこちら</strong></a>
 </p>
+
+<br/>
+<br/>
 
 <p align="center">
   <img src="./docs/assets/textbox-top-image.png" alt="cmux + TextBox" />
