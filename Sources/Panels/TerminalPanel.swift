@@ -39,13 +39,34 @@ final class TerminalPanel: Panel, ObservableObject {
     /// [TextBox] Preserved text content when switching between TextBox and terminal input modes.
     @Published var textBoxContent: String = ""
 
-    /// [TextBox] Toggle TextBox input mode on/off.
-    /// Closing focuses the terminal; opening focuses the TextBox automatically
-    /// via `InputTextView.makeNSView`.
+    /// [TextBox] Handle keyboard shortcut (Cmd+Opt+T).
+    /// Behavior depends on TextBoxShortcutBehavior setting — see TextBoxInput.swift.
     func toggleTextBoxMode() {
-        isTextBoxActive.toggle()
-        if !isTextBoxActive {
-            surface.focusTerminalView()
+        let window = surface.hostedView.window
+        let state = TextBoxFocusState.current(
+            isTextBoxActive: isTextBoxActive,
+            window: window
+        )
+        switch TextBoxInputSettings.shortcutBehavior() {
+        case .toggleDisplay:
+            // Show/hide TextBox (original behavior)
+            switch state {
+            case .hidden:
+                isTextBoxActive = true
+            case .visibleUnfocused, .visibleFocused:
+                isTextBoxActive = false
+                surface.focusTerminalView()
+            }
+        case .toggleFocus:
+            // TextBox stays visible, toggle focus between TextBox and terminal
+            switch state {
+            case .hidden:
+                isTextBoxActive = true
+            case .visibleUnfocused:
+                TextBoxFocusState.focusTextBox(in: window)
+            case .visibleFocused:
+                surface.focusTerminalView()
+            }
         }
     }
 
