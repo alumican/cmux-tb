@@ -1802,6 +1802,12 @@ final class Workspace: Identifiable, ObservableObject {
             didMutate = true
         }
 
+        // [TextBox] Keep TerminalPanel.title in sync so TextBox can detect
+        // slash-command apps (Claude Code, Codex) by terminal process title.
+        if didMutate, let terminalPanel = panels[panelId] as? TerminalPanel {
+            terminalPanel.updateTitle(trimmed)
+        }
+
         // Update bonsplit tab title only when this panel's title changed.
         if didMutate,
            let tabId = surfaceIdFromPanelId(panelId),

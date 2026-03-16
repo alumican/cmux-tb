@@ -70,7 +70,8 @@ struct TerminalPanelView: View {
                     surface: panel.surface,
                     terminalBackgroundColor: runtimeBg,
                     terminalForegroundColor: runtimeFg,
-                    terminalFont: font
+                    terminalFont: font,
+                    terminalTitle: panel.title
                 )
             }
         }

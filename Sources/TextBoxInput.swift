@@ -109,6 +109,41 @@ private enum TextBoxBehavior {
     static let emptyReturnKeyDelayMs: Int = 0
 }
 
+// MARK: - Slash Command App Detection
+
+/// Apps that use a command prefix character (e.g. "/" for /commit, /help).
+/// When one of these is running and the TextBox is empty, the command prefix
+/// is forwarded to the terminal so the user can invoke commands directly.
+enum SlashCommandApp: CaseIterable {
+    case claudeCode
+    case codex
+
+    /// The character that triggers command mode in these apps.
+    static let commandPrefix = "/"
+
+    /// Regex pattern matched (case-insensitive) against the terminal tab title.
+    /// The title may contain leading icons or symbols (e.g. "✱ Claude Code").
+    private var tabTitlePattern: String {
+        switch self {
+        case .claudeCode: return "Claude Code"
+        case .codex:      return "Codex"
+        }
+    }
+
+    /// Returns true if the terminal tab title indicates this app is running.
+    func matches(terminalTitle: String) -> Bool {
+        terminalTitle.range(
+            of: tabTitlePattern,
+            options: [.caseInsensitive, .regularExpression]
+        ) != nil
+    }
+
+    /// Returns true if any slash-command app is detected in the terminal title.
+    static func isAnyRunning(terminalTitle: String) -> Bool {
+        allCases.contains { $0.matches(terminalTitle: terminalTitle) }
+    }
+}
+
 // MARK: - Key Events
 
 /// Events dispatched from the TextBox to its parent for terminal forwarding.
@@ -277,6 +312,7 @@ struct TextBoxInputContainer: View {
     let terminalBackgroundColor: NSColor
     let terminalForegroundColor: NSColor
     let terminalFont: NSFont
+    let terminalTitle: String
     @State private var textViewHeight: CGFloat = 0
 
     /// Computes the height for a given number of lines using the current font.
@@ -315,9 +351,14 @@ struct TextBoxInputContainer: View {
                         surface.forwardKeyEvent(nsEvent)
                     }
                 },
+                onSlashForward: {
+                    surface.sendText(SlashCommandApp.commandPrefix)
+                    surface.focusTerminalView()
+                },
                 terminalBackgroundColor: terminalBackgroundColor,
                 terminalForegroundColor: terminalForegroundColor,
-                terminalFont: terminalFont
+                terminalFont: terminalFont,
+                terminalTitle: terminalTitle
             )
             .frame(height: clampedHeight)
 
@@ -358,9 +399,11 @@ struct TextBoxInputView: NSViewRepresentable {
     let enterToSend: Bool
     @Binding var textViewHeight: CGFloat
     let onKeyEvent: (TextBoxKeyEvent) -> Void
+    let onSlashForward: () -> Void
     let terminalBackgroundColor: NSColor
     let terminalForegroundColor: NSColor
     let terminalFont: NSFont
+    let terminalTitle: String
 
     private var adjustedFont: NSFont {
         let size = max(1, terminalFont.pointSize + TextBoxInputViewLayout.fontSizeOffset)
@@ -465,8 +508,9 @@ struct TextBoxInputView: NSViewRepresentable {
             textView.string = text
             context.coordinator.recalcHeight(textView)
         }
-        // Keep enterToSend and colors in sync
+        // Keep enterToSend, colors, and terminal title in sync
         textView.enterToSend = enterToSend
+        textView.terminalTitle = terminalTitle
         textView.insertionPointColor = terminalForegroundColor
         textView.textColor = terminalForegroundColor
         textView.typingAttributes = makeTypingAttributes()
@@ -626,6 +670,8 @@ private struct TextBoxSendButtonBody: View {
 final class InputTextView: NSTextView {
     weak var inputCoordinator: TextBoxInputView.Coordinator?
     var enterToSend: Bool = false
+    /// Current terminal process title, used for slash-command app detection.
+    var terminalTitle: String = ""
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
@@ -665,12 +711,27 @@ final class InputTextView: NSTextView {
         return result
     }
 
+    override func insertText(_ string: Any, replacementRange: NSRange) {
+        // Forward the command prefix to the terminal when a slash-command app
+        // (Claude Code, Codex, etc.) is running and the TextBox is empty,
+        // so the user can invoke slash commands directly.
+        if let str = string as? String, str == SlashCommandApp.commandPrefix,
+           self.string.isEmpty,
+           SlashCommandApp.isAnyRunning(terminalTitle: terminalTitle) {
+            inputCoordinator?.parent.onSlashForward()
+            return
+        }
+
+        super.insertText(string, replacementRange: replacementRange)
+    }
+
     override func keyDown(with event: NSEvent) {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags.contains(.control) {
             inputCoordinator?.parent.onKeyEvent(.control(event))
             return
         }
+
         super.keyDown(with: event)
     }
 
