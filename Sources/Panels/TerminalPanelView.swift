@@ -31,10 +31,13 @@ struct TerminalPanelView: View {
 
     var body: some View {
         let config = GhosttyConfig.load()
+
         // [TextBox] Apply background-opacity so TextBox matches the terminal
         let runtimeBg = GhosttyApp.shared.defaultBackgroundColor
             .withAlphaComponent(GhosttyApp.shared.defaultBackgroundOpacity)
-        let runtimeFg = config.foregroundColor
+        // [TextBox] Use runtime-resolved foreground to match terminal (not static parser)
+        let runtimeFg = GhosttyApp.shared.defaultForegroundColor
+        // [TextBox] Use terminal font size for consistent appearance
         let font = NSFont.monospacedSystemFont(ofSize: config.fontSize, weight: .regular)
 
         // Layering contract: terminal find UI is mounted in GhosttySurfaceScrollView (AppKit portal layer)
@@ -59,7 +62,7 @@ struct TerminalPanelView: View {
             .id(panel.id)
             .background(Color.clear)
 
-            // [TextBox]
+            // [TextBox] Show inline text input below terminal when enabled
             if showTextBox {
                 TextBoxInputContainer(
                     text: $panel.textBoxContent,
@@ -71,10 +74,12 @@ struct TerminalPanelView: View {
                 )
             }
         }
-        // [TextBox]
+        
+        // [TextBox] Force-show TextBox when the setting is toggled on, even if the
+        // user previously hid it via Cmd+Opt+T. "Enabled = always visible" is the
+        // expected behavior so the setting toggle feels deterministic.
         .onChange(of: textBoxEnabled) { enabled in
             if enabled && !panel.isTextBoxActive {
-                // Enabled on = always show TextBox, even if previously hidden via shortcut.
                 panel.isTextBoxActive = true
             }
         }

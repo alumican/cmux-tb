@@ -846,6 +846,11 @@ class GhosttyApp {
     private(set) var config: ghostty_config_t?
     private(set) var defaultBackgroundColor: NSColor = .windowBackgroundColor
     private(set) var defaultBackgroundOpacity: Double = 1.0
+    
+    // [TextBox] Default foreground color resolved from Ghostty runtime config,
+    // used to keep TextBox text color consistent with the terminal.
+    private(set) var defaultForegroundColor: NSColor = .textColor
+    
     private static func resolveBackgroundLogURL(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> URL {
@@ -1678,6 +1683,17 @@ class GhosttyApp {
                 red: CGFloat(color.r) / 255,
                 green: CGFloat(color.g) / 255,
                 blue: CGFloat(color.b) / 255,
+                alpha: 1.0
+            )
+        }
+
+        var fgColor = ghostty_config_color_s()
+        let fgKey = "foreground"
+        if ghostty_config_get(config, &fgColor, fgKey, UInt(fgKey.lengthOfBytes(using: .utf8))) {
+            defaultForegroundColor = NSColor(
+                red: CGFloat(fgColor.r) / 255,
+                green: CGFloat(fgColor.g) / 255,
+                blue: CGFloat(fgColor.b) / 255,
                 alpha: 1.0
             )
         }
@@ -7479,6 +7495,7 @@ final class GhosttySurfaceScrollView: NSView {
 #endif
             return
         }
+
         // [TextBox] Don't steal focus from a TextBox input view.
         if window.firstResponder is InputTextView {
 #if DEBUG
@@ -7486,6 +7503,7 @@ final class GhosttySurfaceScrollView: NSView {
 #endif
             return
         }
+
 #if DEBUG
         dlog("find.applyFirstResponder APPLY surface=\(surfaceShort) prevFirstResponder=\(String(describing: window.firstResponder))")
 #endif

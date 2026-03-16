@@ -2,6 +2,16 @@
 
 All notable changes to cmux are documented here.
 
+## [0.62.2-tb6] - 2026-03-16
+
+### Fixed
+- Fix TextBox text invisible in dark mode due to black-on-black foreground/background mismatch ([#6](https://github.com/alumican/cmux-tb/issues/6)) — thanks @bam-book for the report!
+
+### Thanks to 2 contributors!
+
+- [@alumican](https://github.com/alumican)
+- [@bam-book](https://github.com/bam-book)
+
 ## [0.62.2] - 2026-03-14
 
 ### Added
