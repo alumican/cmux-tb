@@ -339,6 +339,11 @@ struct TextBoxInputContainer: View {
         let content = text
         TextBoxSubmit.send(content, via: surface)
         text = ""
+        // Reset height to minimum so the TextBox shrinks after sending
+        // multi-line content. The binding update (text = "") triggers
+        // updateNSView which calls recalcHeight, but the layout pass
+        // may not run soon enough for the frame to shrink visually.
+        textViewHeight = 0
     }
 }
 
