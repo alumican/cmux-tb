@@ -109,6 +109,56 @@ private enum TextBoxBehavior {
     static let emptyReturnKeyDelayMs: Int = 0
 }
 
+// MARK: - Focus State
+
+/// The three observable states of the TextBox, used to decide what the
+/// toggle shortcut (Cmd+Opt+T) should do.
+///
+/// Transitions on shortcut press:
+///   hidden           → show TextBox + focus it
+///   visibleUnfocused → focus TextBox (don't hide it)
+///   visibleFocused   → hide TextBox + focus terminal
+enum TextBoxFocusState {
+    /// TextBox is not displayed.
+    case hidden
+    /// TextBox is displayed but the terminal (or another view) has focus.
+    case visibleUnfocused
+    /// TextBox is displayed and has keyboard focus.
+    case visibleFocused
+
+    /// Determine the current state from panel and window state.
+    static func current(isTextBoxActive: Bool, window: NSWindow?) -> TextBoxFocusState {
+        guard isTextBoxActive else { return .hidden }
+        guard let firstResponder = window?.firstResponder else { return .visibleUnfocused }
+        if firstResponder is InputTextView {
+            return .visibleFocused
+        }
+        return .visibleUnfocused
+    }
+
+    /// Move keyboard focus to the InputTextView in the given window.
+    static func focusTextBox(in window: NSWindow?) {
+        guard let window else { return }
+        if let textView = findInputTextView(in: window.contentView) {
+            window.makeFirstResponder(textView)
+        }
+    }
+
+    /// Recursively search for InputTextView in the view hierarchy.
+    private static func findInputTextView(in view: NSView?) -> InputTextView? {
+        guard let view else { return nil }
+        if let inputTextView = view as? InputTextView {
+            return inputTextView
+        }
+        for subview in view.subviews {
+            if let found = findInputTextView(in: subview) {
+                return found
+            }
+        }
+        return nil
+    }
+}
+
 // MARK: - Key Events
 
 /// Events dispatched from the TextBox to its parent for terminal forwarding.
@@ -163,10 +213,12 @@ enum TextBoxInputSettings {
     static let enabledKey = "textBoxEnabled"
     static let enterToSendKey = "textBoxEnterToSend"
     static let escapeBehaviorKey = "textBoxEscapeBehavior"
+    static let shortcutBehaviorKey = "textBoxShortcutBehavior"
 
     static let defaultEnabled = true
     static let defaultEnterToSend = true
     static let defaultEscapeBehavior = TextBoxEscapeBehavior.sendEscape
+    static let defaultShortcutBehavior = TextBoxShortcutBehavior.toggleDisplay
 
     /// Opacity applied to settings rows when TextBox is disabled.
     static let disabledSettingsOpacity: Double = 0.5
@@ -176,6 +228,7 @@ enum TextBoxInputSettings {
         UserDefaults.standard.removeObject(forKey: enabledKey)
         UserDefaults.standard.removeObject(forKey: enterToSendKey)
         UserDefaults.standard.removeObject(forKey: escapeBehaviorKey)
+        UserDefaults.standard.removeObject(forKey: shortcutBehaviorKey)
     }
 
     private static func bool(forKey key: String, default defaultValue: Bool) -> Bool {
@@ -199,23 +252,50 @@ enum TextBoxInputSettings {
         }
         return value
     }
+
+    static func shortcutBehavior() -> TextBoxShortcutBehavior {
+        guard let raw = UserDefaults.standard.string(forKey: shortcutBehaviorKey),
+              let value = TextBoxShortcutBehavior(rawValue: raw) else {
+            return defaultShortcutBehavior
+        }
+        return value
+    }
 }
 
-/// What happens when the user presses Escape in the TextBox.
-enum TextBoxEscapeBehavior: String, CaseIterable, Identifiable {
-    /// Move focus back to the terminal without sending ESC.
-    case focusTerminal = "focusTerminal"
-    /// Send the ESC key to the terminal and keep focus in the TextBox.
-    case sendEscape = "sendEscape"
+/// What the keyboard shortcut (Cmd+Opt+T) does.
+enum TextBoxShortcutBehavior: String, CaseIterable, Identifiable {
+    /// Toggle TextBox visibility (show/hide).
+    case toggleDisplay = "toggleDisplay"
+    /// Keep TextBox always visible, toggle focus between TextBox and terminal.
+    case toggleFocus = "toggleFocus"
 
     var id: String { rawValue }
 
     var displayName: String {
         switch self {
-        case .focusTerminal:
-            return String(localized: "textbox.escapeBehavior.focusTerminal", defaultValue: "Focus Terminal")
+        case .toggleDisplay:
+            return String(localized: "textbox.shortcutBehavior.toggleDisplay", defaultValue: "Toggle Display")
+        case .toggleFocus:
+            return String(localized: "textbox.shortcutBehavior.toggleFocus", defaultValue: "Toggle Focus")
+        }
+    }
+}
+
+/// What happens when the user presses Escape in the TextBox.
+enum TextBoxEscapeBehavior: String, CaseIterable, Identifiable {
+    /// Send the ESC key to the terminal and keep focus in the TextBox.
+    case sendEscape = "sendEscape"
+    /// Move focus back to the terminal without sending ESC.
+    case focusTerminal = "focusTerminal"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
         case .sendEscape:
             return String(localized: "textbox.escapeBehavior.sendEscape", defaultValue: "Send ESC Key")
+        case .focusTerminal:
+            return String(localized: "textbox.escapeBehavior.focusTerminal", defaultValue: "Focus Terminal")
         }
     }
 }

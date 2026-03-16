@@ -55172,6 +55172,40 @@
         }
       }
     },
+    "settings.textBoxInput.shortcutBehavior": {
+      "extractionState": "extracted_with_value",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Keyboard Shortcut (%@)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "キーボードショートカット（%@）"
+          }
+        }
+      }
+    },
+    "settings.textBoxInput.shortcutBehavior.subtitle": {
+      "extractionState": "extracted_with_value",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Shortcut key can be changed in Keyboard Shortcuts settings."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ショートカット設定からキーを変更可能"
+          }
+        }
+      }
+    },
     "settings.textBoxInput.toggleShortcut": {
       "extractionState": "extracted_with_value",
       "localizations": {
@@ -64544,6 +64578,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "ESCキーを送信"
+          }
+        }
+      }
+    },
+    "textbox.shortcutBehavior.toggleDisplay": {
+      "extractionState": "extracted_with_value",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Toggle Display"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "表示切替"
+          }
+        }
+      }
+    },
+    "textbox.shortcutBehavior.toggleFocus": {
+      "extractionState": "extracted_with_value",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Toggle Focus"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "フォーカス切替"
           }
         }
       }
