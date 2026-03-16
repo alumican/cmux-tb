@@ -8953,6 +8953,7 @@ private enum SidebarHelpMenuAction {
     case checkForUpdates
     case sendFeedback
     case welcome
+    
     // [TextBox] Fork-specific actions
     case forkChangelog
     case forkGithub
@@ -9692,6 +9693,7 @@ private struct SidebarHelpMenuButton: View {
                     appDelegate.openWelcomeWorkspace()
                 }
             }
+
         // [TextBox] Fork-specific action
         case .forkChangelog:
             guard let forkChangelogURL else { return }
