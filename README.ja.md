@@ -7,6 +7,8 @@
   </a>
 </p>
 
+<p align="center">バージョン 0.62.2-tb5（2026/3/16更新）</p>
+
 <br>
 
 <p align="center">
