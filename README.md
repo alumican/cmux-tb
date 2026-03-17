@@ -7,8 +7,10 @@
   </a>
 </p>
 
-<p align="center">Version 0.62.2-tb6 (Updated 2026/3/16)</p>
-<p align="center">There is a known issue where text is not displayed on macOS Sonoma / Sequoia. A fix is in progress.</p>
+<p align="center">Version 0.62.2-tb7 (Updated 2026/3/17)</p>
+
+> [!Warning]
+> On macOS 14 (Sonoma) / macOS 15 (Sequoia), versions prior to 0.62.2-tb7 have a bug where text typed in the TextBox is not displayed. Please select "Check for updates" from the "?" button in the bottom-left corner to update to the latest version.
 
 <br>
 

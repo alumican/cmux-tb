@@ -2,6 +2,17 @@
 
 All notable changes to cmux are documented here.
 
+## [0.62.2-tb7] - 2026-03-17
+
+### Fixed
+- Fix TextBox text invisible on macOS Sonoma/Sequoia ([#6](https://github.com/alumican/cmux-tb/issues/6)) — thanks @bam-book and @ryo9999 for the reports!
+
+### Thanks to 3 contributors!
+
+- [@alumican](https://github.com/alumican)
+- [@bam-book](https://github.com/bam-book)
+- [@ryo9999](https://github.com/ryo9999)
+
 ## [0.62.2-tb6] - 2026-03-16
 
 ### Fixed
