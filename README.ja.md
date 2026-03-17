@@ -7,8 +7,10 @@
   </a>
 </p>
 
-<p align="center">バージョン 0.62.2-tb6（2026/3/16更新）</p>
-<p align="center">現在macOS Sonoma / Sequoia環境でテキストが表示されない不具合があり修正中です</p>
+<p align="center">バージョン 0.62.2-tb7（2026/3/17更新）</p>
+
+> [!Warning]
+> macOS 14 (Sonoma) / macOS 15 (Sequoia) では、0.62.2-tb7 より前のバージョンでテキストボックスに入力した文字が表示されない不具合があります。左下の「?」ボタンから「Check for updates」を選択し、最新版にアップデートしてください。
 
 <br>
 
