@@ -4,8 +4,14 @@ All notable changes to cmux are documented here.
 
 ## [0.62.2-tb7] - 2026-03-17
 
+### Added
+- Forward "/" to terminal for slash commands in Claude Code / Codex ([#3](https://github.com/alumican/cmux-tb/pull/3))
+- Keyboard shortcut behavior setting: Toggle Display or Toggle Focus ([#4](https://github.com/alumican/cmux-tb/pull/4))
+
 ### Fixed
-- Fix TextBox text invisible on macOS Sonoma/Sequoia ([#6](https://github.com/alumican/cmux-tb/issues/6)) — thanks @bam-book and @ryo9999 for the reports!
+- Fix TextBox text invisible on macOS Sonoma / Sequoia ([#6](https://github.com/alumican/cmux-tb/issues/6)) — thanks @bam-book and @ryo9999 for the reports!
+- Fix TextBox not shrinking after submitting multi-line content
+- Fix TextBox shortcut toggling wrong tab in multi-tab windows
 
 ### Thanks to 3 contributors!
 
