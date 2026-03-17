@@ -54,6 +54,9 @@ Ctrl+key combinations (Ctrl+C, Ctrl+D, Ctrl+Z, etc.) and Escape are <strong>alwa
 <td width="50%" valign="middle">
 <h3>Ready when you need it</h3>
 Toggle the TextBox with a shortcut — focus moves smoothly between the input bar and terminal, so you can start typing right away.
+<br/>
+<br/>
+You can choose "Toggle Display" or "Toggle Focus" in Settings.
 </td>
 <td width="50%">
 <img src="./docs/assets/textbox-toggle.gif" alt="TextBox toggle" width="100%" />
@@ -71,7 +74,7 @@ The TextBox uses your OS-native text input. Arrow keys, selection, copy & paste 
 <tr>
 <td width="50%" valign="middle">
 <h3>Great with Claude Code</h3>
-Launch an agent, edit prompts, reply to questions, interrupt a task — all without leaving the TextBox. Works with other terminal agents too, of course.
+Launch an agent, edit prompts, reply to questions, call "/" commands, interrupt a task — all without leaving the TextBox. Works with other terminal agents too, of course.
 </td>
 <td width="50%">
 <img src="./docs/assets/textbox-agent.gif" alt="Great with Claude Code" width="100%" />
@@ -132,7 +135,7 @@ All standard cmux shortcuts continue to work. See the [cmux README](https://gith
 | Enable Mode | On | Enable TextBox input |
 | Send on Return | On | Return sends text, Shift+Return inserts newline (swap when off) |
 | Escape Key | Send ESC Key | Action when pressing ESC (Focus Terminal / Send ESC Key) |
-| Show/Hide TextBox Input | ⌘⌥T | Keyboard shortcut to toggle TextBox |
+| Keyboard Shortcut (⌘⌥T) | Toggle Display | **Toggle Display**: show/hide TextBox. **Toggle Focus**: switch focus between TextBox and terminal |
 
 ## 📄 License
 
