@@ -107,6 +107,22 @@ private enum TextBoxBehavior {
     /// Delay (ms) before sending Return when the TextBox is empty (no paste).
     /// Set to 0 to send Return immediately (default).
     static let emptyReturnKeyDelayMs: Int = 0
+    /// Scope of the Cmd+Opt+T toggle shortcut.
+    /// `.active` = only the focused tab, `.all` = all tabs simultaneously.
+    static let toggleScope: TextBoxToggleTarget = .all
+}
+
+// MARK: - Toggle Scope
+
+/// Scope of the TextBox toggle shortcut (Cmd+Opt+T).
+enum TextBoxToggleTarget {
+    /// Toggle only the currently active (focused or TextBox-focused) panel.
+    case active
+    /// Toggle all terminal panels simultaneously.
+    case all
+
+    /// The configured default scope, read from TextBoxBehavior.
+    static var `default`: TextBoxToggleTarget { TextBoxBehavior.toggleScope }
 }
 
 // MARK: - Slash Command App Detection
@@ -586,9 +602,14 @@ struct TextBoxInputView: NSViewRepresentable {
         // Register this InputTextView with the panel for direct focus management
         onInputTextViewCreated?(textView)
 
-        // Auto-focus the text view and calculate initial height
+        // Auto-focus the text view and calculate initial height.
+        // Only auto-focus if nothing else currently has focus (i.e. the
+        // window has no first responder yet). When toggling all tabs at once,
+        // the active tab's terminal already has focus and must not be stolen.
         DispatchQueue.main.async {
-            textView.window?.makeFirstResponder(textView)
+            if textView.window?.firstResponder == textView.window {
+                textView.window?.makeFirstResponder(textView)
+            }
             context.coordinator.recalcHeight(textView)
         }
 

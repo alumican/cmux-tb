@@ -532,7 +532,7 @@ struct cmuxApp: App {
 
                 // [TextBox]
                 splitCommandButton(title: String(localized: "menu.view.toggleTextBoxInput", defaultValue: "Show/Hide TextBox Input"), shortcut: toggleTextBoxInputMenuShortcut) {
-                    activeTabManager.selectedWorkspace?.focusedTerminalPanel?.toggleTextBoxMode()
+                    activeTabManager.selectedWorkspace?.toggleTextBoxMode(.default)
                 }
 
                 Divider()

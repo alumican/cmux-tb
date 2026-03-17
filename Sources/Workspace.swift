@@ -967,6 +967,44 @@ final class Workspace: Identifiable, ObservableObject {
         return panel
     }
 
+    // [TextBox] Toggle TextBox display for terminal panels in this workspace.
+    func toggleTextBoxMode(_ target: TextBoxToggleTarget) {
+        let terminalPanels = panels.values.compactMap { $0 as? TerminalPanel }
+
+        switch target {
+        case .active:
+            // If an InputTextView has focus, find its owning panel so the
+            // toggle operates on the correct tab (not focusedTerminalPanel,
+            // which may point to a previously focused tab).
+            let firstResponder = NSApp.keyWindow?.firstResponder
+            let panel = terminalPanels.first(where: { $0.inputTextView === firstResponder })
+                ?? focusedTerminalPanel
+            panel?.toggleTextBoxMode()
+
+        case .all:
+            let anyActive = terminalPanels.contains { $0.isTextBoxActive }
+            if anyActive {
+                // Hiding: toggle all off, focus terminal
+                for panel in terminalPanels {
+                    panel.isTextBoxActive = false
+                }
+                focusedTerminalPanel?.surface.focusTerminalView()
+            } else {
+                // Showing: toggle all on, then focus the active panel's TextBox.
+                for panel in terminalPanels {
+                    panel.isTextBoxActive = true
+                }
+                // Schedule focus after SwiftUI creates the TextBox views.
+                let activePanel = focusedTerminalPanel
+                DispatchQueue.main.async {
+                    if let textView = activePanel?.inputTextView {
+                        textView.window?.makeFirstResponder(textView)
+                    }
+                }
+            }
+        }
+    }
+
     func effectiveSelectedPanelId(inPane paneId: PaneID) -> UUID? {
         bonsplitController.selectedTab(inPane: paneId).flatMap { panelIdFromSurfaceId($0.id) }
     }
