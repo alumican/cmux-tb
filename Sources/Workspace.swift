@@ -967,38 +967,90 @@ final class Workspace: Identifiable, ObservableObject {
         return panel
     }
 
-    // [TextBox] Toggle TextBox display for terminal panels in this workspace.
+    // [TextBox] Toggle TextBox for terminal panels in this workspace.
+    // Resolves the active panel (via InputTextView first responder match)
+    // then delegates to the per-panel or all-panels logic.
     func toggleTextBoxMode(_ target: TextBoxToggleTarget) {
         let terminalPanels = panels.values.compactMap { $0 as? TerminalPanel }
 
-        switch target {
-        case .active:
-            // If an InputTextView has focus, find its owning panel so the
-            // toggle operates on the correct tab (not focusedTerminalPanel,
-            // which may point to a previously focused tab).
-            let firstResponder = NSApp.keyWindow?.firstResponder
-            let panel = terminalPanels.first(where: { $0.inputTextView === firstResponder })
-                ?? focusedTerminalPanel
-            panel?.toggleTextBoxMode()
+        // Find the panel that currently owns focus (TextBox or terminal).
+        let firstResponder = NSApp.keyWindow?.firstResponder
+        let activePanel = terminalPanels.first(where: { $0.inputTextView === firstResponder })
+            ?? focusedTerminalPanel
 
+        let behavior = TextBoxInputSettings.shortcutBehavior()
+
+        switch target {
+        // --- active: toggle only the focused tab ---
+        case .active:
+            switch behavior {
+            // active + toggleDisplay: show/hide TextBox on the focused tab
+            case .toggleDisplay:
+                if activePanel?.isTextBoxActive == true {
+                    activePanel?.isTextBoxActive = false
+                    activePanel?.surface.focusTerminalView()
+                } else {
+                    activePanel?.isTextBoxActive = true
+                }
+            // active + toggleFocus: keep TextBox visible, swap focus between
+            // the focused tab's TextBox and terminal
+            case .toggleFocus:
+                guard let panel = activePanel else { return }
+                let isFocused = panel.inputTextView != nil
+                    && firstResponder === panel.inputTextView
+                if !panel.isTextBoxActive {
+                    panel.isTextBoxActive = true
+                } else if isFocused {
+                    panel.surface.focusTerminalView()
+                } else if let textView = panel.inputTextView {
+                    textView.window?.makeFirstResponder(textView)
+                }
+            }
+
+        // --- all: toggle all tabs simultaneously ---
         case .all:
             let anyActive = terminalPanels.contains { $0.isTextBoxActive }
-            if anyActive {
-                // Hiding: toggle all off, focus terminal
-                for panel in terminalPanels {
-                    panel.isTextBoxActive = false
+            switch behavior {
+            // all + toggleDisplay: show/hide TextBox on every tab at once,
+            // focus the active tab's TextBox when showing
+            case .toggleDisplay:
+                if anyActive {
+                    for panel in terminalPanels {
+                        panel.isTextBoxActive = false
+                    }
+                    activePanel?.surface.focusTerminalView()
+                } else {
+                    for panel in terminalPanels {
+                        panel.isTextBoxActive = true
+                    }
+                    let panel = activePanel
+                    DispatchQueue.main.async {
+                        if let textView = panel?.inputTextView {
+                            textView.window?.makeFirstResponder(textView)
+                        }
+                    }
                 }
-                focusedTerminalPanel?.surface.focusTerminalView()
-            } else {
-                // Showing: toggle all on, then focus the active panel's TextBox.
-                for panel in terminalPanels {
-                    panel.isTextBoxActive = true
+            // all + toggleFocus: ensure all tabs show TextBox, then swap
+            // focus between the active tab's TextBox and terminal
+            case .toggleFocus:
+                if !anyActive {
+                    for panel in terminalPanels {
+                        panel.isTextBoxActive = true
+                    }
                 }
-                // Schedule focus after SwiftUI creates the TextBox views.
-                let activePanel = focusedTerminalPanel
-                DispatchQueue.main.async {
-                    if let textView = activePanel?.inputTextView {
-                        textView.window?.makeFirstResponder(textView)
+                guard let panel = activePanel else { return }
+                let isFocused = panel.inputTextView != nil
+                    && firstResponder === panel.inputTextView
+                if isFocused {
+                    panel.surface.focusTerminalView()
+                } else if let textView = panel.inputTextView {
+                    textView.window?.makeFirstResponder(textView)
+                } else {
+                    // TextBox not yet created; schedule focus after SwiftUI layout.
+                    DispatchQueue.main.async {
+                        if let textView = panel.inputTextView {
+                            textView.window?.makeFirstResponder(textView)
+                        }
                     }
                 }
             }

@@ -43,22 +43,6 @@ final class TerminalPanel: Panel, ObservableObject {
     /// Set by TextBoxInputContainer when the view is created.
     weak var inputTextView: InputTextView?
 
-    /// [TextBox] Handle keyboard shortcut (Cmd+Opt+T) — toggle TextBox display.
-    func toggleTextBoxMode() {
-        let window = surface.hostedView.window
-        let state = TextBoxFocusState.current(
-            isTextBoxActive: isTextBoxActive,
-            window: window
-        )
-        switch state {
-        case .hidden:
-            isTextBoxActive = true
-        case .visibleUnfocused, .visibleFocused:
-            isTextBoxActive = false
-            surface.focusTerminalView()
-        }
-    }
-
     /// Bump this token to force SwiftUI to call `updateNSView` on `GhosttyTerminalView`,
     /// which re-attaches the hosted view after bonsplit close/reparent operations.
     ///
