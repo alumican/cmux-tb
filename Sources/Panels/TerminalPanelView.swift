@@ -19,8 +19,6 @@ struct TerminalPanelView: View {
     // [TextBox]
     @AppStorage(TextBoxInputSettings.enabledKey) private var textBoxEnabled = TextBoxInputSettings.defaultEnabled
     @AppStorage(TextBoxInputSettings.enterToSendKey) private var enterToSend = TextBoxInputSettings.defaultEnterToSend
-    @AppStorage(TextBoxInputSettings.shortcutBehaviorKey) private var shortcutBehavior = TextBoxInputSettings.defaultShortcutBehavior.rawValue
-
     /// Whether the TextBox is visible. Requires both the global Enabled setting
     /// AND the per-panel `isTextBoxActive` flag. When Enabled is toggled on,
     /// `onChange` below forces `isTextBoxActive = true` so that TextBox always
@@ -72,7 +70,8 @@ struct TerminalPanelView: View {
                     terminalBackgroundColor: runtimeBg,
                     terminalForegroundColor: runtimeFg,
                     terminalFont: font,
-                    terminalTitle: panel.title
+                    terminalTitle: panel.title,
+                    onInputTextViewCreated: { panel.inputTextView = $0 }
                 )
             }
         }
@@ -82,13 +81,6 @@ struct TerminalPanelView: View {
         // expected behavior so the setting toggle feels deterministic.
         .onChange(of: textBoxEnabled) { enabled in
             if enabled && !panel.isTextBoxActive {
-                panel.isTextBoxActive = true
-            }
-        }
-        // [TextBox] Auto-show TextBox when switching to Toggle Focus mode,
-        // since that mode assumes TextBox is always visible.
-        .onChange(of: shortcutBehavior) { newValue in
-            if newValue == TextBoxShortcutBehavior.toggleFocus.rawValue && !panel.isTextBoxActive {
                 panel.isTextBoxActive = true
             }
         }

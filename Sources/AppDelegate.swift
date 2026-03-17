@@ -8197,7 +8197,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // [TextBox]
         if matchShortcut(event: event, shortcut: KeyboardShortcutSettings.shortcut(for: .toggleTextBoxInput)) {
             if let workspace = tabManager?.selectedWorkspace {
-                workspace.focusedTerminalPanel?.toggleTextBoxMode()
+                // If an InputTextView has focus, find its owning panel so the
+                // toggle operates on the correct tab (not focusedTerminalPanel,
+                // which may point to a previously focused tab).
+                let firstResponder = NSApp.keyWindow?.firstResponder
+                let terminalPanels = workspace.panels.values.compactMap { $0 as? TerminalPanel }
+                let panel = terminalPanels.first(where: { $0.inputTextView === firstResponder })
+                    ?? workspace.focusedTerminalPanel
+                panel?.toggleTextBoxMode()
             }
             return true
         }

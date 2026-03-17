@@ -393,6 +393,9 @@ struct TextBoxInputContainer: View {
     let terminalForegroundColor: NSColor
     let terminalFont: NSFont
     let terminalTitle: String
+    /// Called when the InputTextView is created, so the panel can store a direct
+    /// reference for focus management across multiple tabs.
+    let onInputTextViewCreated: ((InputTextView) -> Void)?
     @State private var textViewHeight: CGFloat = 0
 
     /// Computes the height for a given number of lines using the current font.
@@ -435,6 +438,7 @@ struct TextBoxInputContainer: View {
                     surface.sendText(SlashCommandApp.commandPrefix)
                     surface.focusTerminalView()
                 },
+                onInputTextViewCreated: onInputTextViewCreated,
                 terminalBackgroundColor: terminalBackgroundColor,
                 terminalForegroundColor: terminalForegroundColor,
                 terminalFont: terminalFont,
@@ -480,6 +484,7 @@ struct TextBoxInputView: NSViewRepresentable {
     @Binding var textViewHeight: CGFloat
     let onKeyEvent: (TextBoxKeyEvent) -> Void
     let onSlashForward: () -> Void
+    let onInputTextViewCreated: ((InputTextView) -> Void)?
     let terminalBackgroundColor: NSColor
     let terminalForegroundColor: NSColor
     let terminalFont: NSFont
@@ -577,6 +582,9 @@ struct TextBoxInputView: NSViewRepresentable {
             scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
         ])
+
+        // Register this InputTextView with the panel for direct focus management
+        onInputTextViewCreated?(textView)
 
         // Auto-focus the text view and calculate initial height
         DispatchQueue.main.async {

@@ -3125,13 +3125,6 @@ struct SettingsView: View {
     @AppStorage(TextBoxInputSettings.enabledKey) private var textBoxInputEnabled = TextBoxInputSettings.defaultEnabled
     @AppStorage(TextBoxInputSettings.enterToSendKey) private var textBoxEnterToSend = TextBoxInputSettings.defaultEnterToSend
     @AppStorage(TextBoxInputSettings.escapeBehaviorKey) private var textBoxEscapeBehavior = TextBoxInputSettings.defaultEscapeBehavior.rawValue
-    @AppStorage(TextBoxInputSettings.shortcutBehaviorKey) private var textBoxShortcutBehavior = TextBoxInputSettings.defaultShortcutBehavior.rawValue
-
-    // [TextBox] Settings title with current shortcut key
-    private var textBoxShortcutBehaviorTitle: String {
-        let key = KeyboardShortcutSettings.toggleTextBoxInputShortcut().displayString
-        return String(localized: "settings.textBoxInput.shortcutBehavior", defaultValue: "Keyboard Shortcut (\(key))")
-    }
 
     @AppStorage("sidebarShowPorts") private var sidebarShowPorts = true
     @AppStorage("sidebarShowLog") private var sidebarShowLog = true
@@ -4109,16 +4102,13 @@ struct SettingsView: View {
 
                         SettingsCardDivider()
 
-                        // [TextBox] Shortcut behavior setting
-                        SettingsPickerRow(
-                            textBoxShortcutBehaviorTitle,
-                            subtitle: String(localized: "settings.textBoxInput.shortcutBehavior.subtitle", defaultValue: "Shortcut key can be changed in Keyboard Shortcuts settings."),
-                            controlWidth: pickerColumnWidth,
-                            selection: $textBoxShortcutBehavior
+                        SettingsCardRow(
+                            String(localized: "settings.textBoxInput.toggleShortcut", defaultValue: "Show/Hide TextBox Input"),
+                            subtitle: String(localized: "settings.textBoxInput.toggleShortcut.subtitle", defaultValue: "Configurable in Keyboard Shortcuts settings.")
                         ) {
-                            ForEach(TextBoxShortcutBehavior.allCases) { behavior in
-                                Text(behavior.displayName).tag(behavior.rawValue)
-                            }
+                            Text(KeyboardShortcutSettings.toggleTextBoxInputShortcut().displayString)
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundStyle(.secondary)
                         }
                         .textBoxSettingsDisabled(!textBoxInputEnabled)
                     }
