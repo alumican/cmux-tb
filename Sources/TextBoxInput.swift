@@ -529,6 +529,7 @@ struct TextBoxInputView: NSViewRepresentable {
         scrollView.translatesAutoresizingMaskIntoConstraints = false
 
         let textView = InputTextView()
+
         textView.isRichText = false
         textView.allowsUndo = true
         textView.isEditable = true
@@ -536,6 +537,15 @@ struct TextBoxInputView: NSViewRepresentable {
         textView.usesFindPanel = false
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
+        // Ensure the text view resizes horizontally with the scroll view's
+        // content area. Without this, the text container width may stay at 0
+        // on macOS Sonoma/Sequoia, making typed text invisible. (#6)
+        textView.autoresizingMask = [.width]
+        textView.minSize = NSSize(width: 0, height: 0)
+        textView.maxSize = NSSize(
+            width: CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude
+        )
         textView.textContainerInset = TextBoxInputViewLayout.textInset
         textView.delegate = context.coordinator
         textView.inputCoordinator = context.coordinator
