@@ -8,6 +8,7 @@
 </p>
 
 <p align="center">Version 0.62.2-tb6 (Updated 2026/3/16)</p>
+<p align="center">There is a known issue where text is not displayed on macOS Sonoma / Sequoia. A fix is in progress.</p>
 
 <br>
 

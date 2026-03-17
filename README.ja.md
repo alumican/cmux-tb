@@ -8,6 +8,7 @@
 </p>
 
 <p align="center">バージョン 0.62.2-tb6（2026/3/16更新）</p>
+<p align="center">現在macOS Sonoma / Sequoia環境でテキストが表示されない不具合があり修正中です</p>
 
 <br>
 
