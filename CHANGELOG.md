@@ -2,6 +2,16 @@
 
 All notable changes to cmux are documented here.
 
+## [0.62.2-tb8] - 2026-03-18
+
+### Added
+- Support Emacs-style editing keybindings in TextBox (Ctrl+A/E/F/B/N/P/K/H) ([#9](https://github.com/alumican/cmux-tb/pull/9)) — thanks @kingsalmon1111!
+
+### Thanks to 2 contributors!
+
+- [@alumican](https://github.com/alumican)
+- [@kingsalmon1111](https://github.com/kingsalmon1111)
+
 ## [0.62.2-tb7] - 2026-03-17
 
 ### Added
