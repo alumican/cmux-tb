@@ -857,7 +857,6 @@ final class InputTextView: NSTextView {
         "n",  // moveDown:
         "p",  // moveUp:
         "k",  // deleteToEndOfLine: (via killLine:)
-        "d",  // deleteForward:
         "h",  // deleteBackward:
     ]
 
