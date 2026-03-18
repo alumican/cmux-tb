@@ -4517,9 +4517,11 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
     private func invalidateTextInputCoordinates(selectionChanged: Bool = false) {
         guard let inputContext else { return }
         inputContext.invalidateCharacterCoordinates()
+        #if compiler(>=6.1)
         if #available(macOS 15.4, *), selectionChanged {
             inputContext.textInputClientDidUpdateSelection()
         }
+        #endif
     }
 
     override var acceptsFirstResponder: Bool { true }
