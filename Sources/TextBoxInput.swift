@@ -25,8 +25,9 @@
 // - **Auto-grow**: Text box grows with content (1–5 lines), then scrolls internally
 // - **Shell history integration**: When TextBox is empty, arrow keys / Tab /
 //   Backspace are forwarded to the terminal for shell completion and history
-// - **Ctrl+key forwarding**: Ctrl+C/D/Z etc. are always forwarded to the
-//   terminal regardless of TextBox content
+// - **Ctrl+key forwarding**: Ctrl+C/Z etc. are always forwarded to the
+//   terminal regardless of TextBox content. Emacs-style editing keys
+//   (Ctrl+A/E/F/B/N/P/K/D/H) are handled by the TextBox natively.
 // - **Theme sync**: Automatically matches terminal background/foreground colors and font
 // - **Show/Hide**: Cmd+Option+T to show/hide with focus coordination
 //
@@ -844,9 +845,33 @@ final class InputTextView: NSTextView {
         super.insertText(string, replacementRange: replacementRange)
     }
 
+    /// Emacs-style editing keys that should be handled by the TextBox
+    /// (NSTextView) instead of being forwarded to the terminal.
+    /// macOS NSTextView natively supports these bindings via the standard
+    /// key binding mechanism, so passing them to `super.keyDown` is sufficient.
+    private static let emacsEditingKeys: Set<String> = [
+        "a",  // moveToBeginningOfLine:
+        "e",  // moveToEndOfLine:
+        "f",  // moveForward:
+        "b",  // moveBackward:
+        "n",  // moveDown:
+        "p",  // moveUp:
+        "k",  // deleteToEndOfLine: (via killLine:)
+        "d",  // deleteForward:
+        "h",  // deleteBackward:
+    ]
+
     override func keyDown(with event: NSEvent) {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags.contains(.control) {
+            // Let Emacs-style editing keys be handled natively by NSTextView.
+            // All other Ctrl+key combinations (Ctrl+C, Ctrl+Z, etc.) are
+            // forwarded to the terminal for shell control.
+            if let chars = event.charactersIgnoringModifiers,
+               Self.emacsEditingKeys.contains(chars) {
+                super.keyDown(with: event)
+                return
+            }
             inputCoordinator?.parent.onKeyEvent(.control(event))
             return
         }
