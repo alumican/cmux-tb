@@ -172,10 +172,10 @@ final class TextBoxKeyRoutingTests: XCTestCase {
         }
     }
 
-    func testAtNotForwardedForCodex() {
+    func testAtForwardWhenEmptyAndCodexRunning() {
         let action = route(.text("@"), isEmpty: true, terminalTitle: "Codex")
-        guard case .textInput = action else {
-            XCTFail("Expected .textInput for Codex + @, got \(action)")
+        guard case .forwardPrefix("@") = action else {
+            XCTFail("Expected .forwardPrefix(\"@\") for Codex, got \(action)")
             return
         }
     }

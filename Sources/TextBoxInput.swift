@@ -220,7 +220,7 @@ enum TextBoxFocusState {
 // | 1  | Ctrl     | A E F B N P K H  | any     | any              | Emacs editing (handled by NSTextView) |
 // | 2  | Ctrl     | * (other)        | any     | any              | Forward to terminal (keep focus)      |
 // | 3  |          | /                | empty   | claudeCode,codex | Forward prefix + focus terminal       |
-// | 4  |          | @                | empty   | claudeCode       | Forward prefix + focus terminal       |
+// | 4  |          | @                | empty   | claudeCode,codex | Forward prefix + focus terminal       |
 // | 5  |          | ?                | empty   | claudeCode,codex | Forward key event to terminal (keep focus) |
 // | 6  |          | Return           | any     | any              | Submit or newline (setting)           |
 // | 7  | Shift    | Return           | any     | any              | Newline or submit (inverse of 6)      |
@@ -318,7 +318,7 @@ enum TextBoxKeyRouting {
     /// Rules 3, 4: Prefixes forwarded to terminal when TextBox is empty (+ focus terminal).
     private static let prefixForwardKeys: [TextBoxAppDetection: [String]] = [
         .claudeCode: ["/", "@"],
-        .codex:      ["/"],
+        .codex:      ["/", "@"],
     ]
 
     /// Rule 5: Text forwarded to terminal when TextBox is empty (keep focus).
