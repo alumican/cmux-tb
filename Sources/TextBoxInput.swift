@@ -2,9 +2,8 @@
 //
 // # TextBox Input Mode
 //
-// Replaces terminal input with a native NSTextView-based text box,
-// providing a standard text editing experience that terminal emulators
-// typically struggle with.
+// Provides a native text editing experience for terminal input that
+// terminal emulators typically struggle with.
 //
 // ## Rationale
 //
@@ -18,23 +17,28 @@
 // ## Features
 //
 // - **Native text editing**: Full macOS standard operations including
-//   Cmd+A/C/V/X/Z, Option+Arrow word navigation, mouse selection, drag & drop
+//   Cmd+A/C/V/X/Z, Option+Arrow word navigation, mouse selection
+// - **Drag & drop**: Drop files/folders from Finder to insert shell-escaped paths
 // - **IME support**: Input methods (e.g. Japanese) work correctly
 // - **Multi-line input**: Insert newlines for multi-line text submission.
 //   Enter=send / Shift+Enter=newline by default (reversible in settings)
-// - **Auto-grow**: Text box grows with content (1–5 lines), then scrolls internally
-// - **Key routing**: Ctrl+key forwarding, Emacs editing, shell history,
-//   prefix forwarding (/, @) — all rules are defined in `TextBoxKeyRouting`
-//   as a centralized table. See the rule table comment above that enum.
-// - **Theme sync**: Automatically matches terminal background/foreground colors and font
-// - **Show/Hide**: Cmd+Option+T to show/hide with focus coordination
+// - **Auto-grow**: Text box grows with content (1–8 lines), then scrolls internally
+// - **Key routing**: Ctrl+key forwarding, Emacs editing (Ctrl+A/E/F/B/N/P/K/H),
+//   shell history, prefix forwarding (/, @) — all rules are defined in
+//   `TextBoxKeyRouting` as a centralized table. See the rule table above that enum.
+// - **Theme sync**: Matches terminal background/foreground colors, font, and
+//   selection colors (inverted fg/bg)
+// - **Toggle**: Cmd+Option+T to toggle display or focus (configurable).
+//   Default is Toggle Focus (keep TextBox visible, swap focus)
 //
 // ## Settings (Settings > TextBox Input)
 //
 // - **Enable Mode**: Toggle TextBox on/off (default: off)
-// - **Send on Return**: On = Return sends / Shift+Return inserts newline,
+// - **Send on Return**: On = Return sends / Shift+Enter inserts newline,
 //   Off = Enter inserts newline / Shift+Enter sends (default: on)
-// - **Show/Hide TextBox Input**: Shows the toggle shortcut (Cmd+Option+T)
+// - **Keyboard Shortcut (Cmd+Option+T)**: Toggle Display or Toggle Focus
+//   (default: Toggle Focus)
+// - **Escape Behavior**: Focus Terminal or Send Escape (default: Send Escape)
 //
 // ## Upstream impact
 //
