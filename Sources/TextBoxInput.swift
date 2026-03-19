@@ -24,7 +24,7 @@
 //   Enter=send / Shift+Enter=newline by default (reversible in settings)
 // - **Auto-grow**: Text box grows with content (1–8 lines), then scrolls internally
 // - **Key routing**: Ctrl+key forwarding, Emacs editing (Ctrl+A/E/F/B/N/P/K/H),
-//   shell history, prefix forwarding (/, @), text forwarding (?) — all rules
+//   shell history, prefix forwarding (/, @), key forwarding (?) — all rules
 //   are defined in `TextBoxKeyRouting` as a centralized table.
 //   See the rule table above that enum.
 // - **Theme sync**: Matches terminal background/foreground colors, font, and
@@ -221,7 +221,7 @@ enum TextBoxFocusState {
 // | 2  | Ctrl     | * (other)        | any     | any              | Forward to terminal (keep focus)      |
 // | 3  |          | /                | empty   | claudeCode,codex | Forward prefix + focus terminal       |
 // | 4  |          | @                | empty   | claudeCode       | Forward prefix + focus terminal       |
-// | 5  |          | ?                | empty   | claudeCode,codex | Forward text to terminal (keep focus) |
+// | 5  |          | ?                | empty   | claudeCode,codex | Forward key event to terminal (keep focus) |
 // | 6  |          | Return           | any     | any              | Submit or newline (setting)           |
 // | 7  | Shift    | Return           | any     | any              | Newline or submit (inverse of 6)      |
 // | 8  |          | Escape           | any     | any              | Focus terminal or send ESC (setting)  |
