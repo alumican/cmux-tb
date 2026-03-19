@@ -7,7 +7,7 @@
   </a>
 </p>
 
-<p align="center">Version 0.62.2-tb7 (Updated 2026/3/17)</p>
+<p align="center">Version 0.62.2-tb9 (Updated 2026/3/19)</p>
 
 > [!Warning]
 > On macOS 14 (Sonoma) / macOS 15 (Sequoia), versions prior to 0.62.2-tb7 have a bug where text typed in the TextBox is not displayed. Please select "Check for updates" from the "?" button in the bottom-left corner to update to the latest version.
@@ -74,7 +74,7 @@ The TextBox uses your OS-native text input. Arrow keys, selection, copy & paste 
 <tr>
 <td width="50%" valign="middle">
 <h3>Great with Claude Code</h3>
-Launch an agent, edit prompts, reply to questions, call "/" commands, interrupt a task — all without leaving the TextBox. Works with other terminal agents too, of course.
+Launch an agent, edit prompts, reply to questions, call "/" or "@" commands, interrupt a task — all without leaving the TextBox. Works with other terminal agents too, of course.
 </td>
 <td width="50%">
 <img src="./docs/assets/textbox-agent.gif" alt="Great with Claude Code" width="100%" />
