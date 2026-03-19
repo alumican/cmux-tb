@@ -2,6 +2,16 @@
 
 All notable changes to cmux are documented here.
 
+## [0.62.2-tb9] - 2026-03-19
+
+### Added
+- Drag and drop files/folders onto TextBox to insert shell-escaped paths
+- Forward "@" to terminal for Claude Code @-mentions (empty TextBox only)
+
+### Changed
+- TextBox selection colors now match terminal (inverted foreground/background)
+- Centralize key routing rules into `TextBoxKeyRouting` for maintainability
+
 ## [0.62.2-tb8] - 2026-03-18
 
 ### Added
