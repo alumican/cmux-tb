@@ -214,12 +214,12 @@ enum TextBoxFocusState {
 // |---|----------|------------------|---------|------------------|---------------------------------------|
 // | 1 | Ctrl     | A/E/F/B/N/P/K/H  | any     | any              | Emacs editing (handled by NSTextView) |
 // | 2 | Ctrl     | * (other)        | any     | any              | Forward to terminal (keep focus)      |
-// | 3 | None     | /                | empty   | claudeCode,codex | Forward prefix + focus terminal       |
-// | 4 | None     | @                | empty   | claudeCode       | Forward prefix + focus terminal       |
-// | 5 | None     | Return           | any     | any              | Submit or newline (setting)           |
+// | 3 | —        | /                | empty   | claudeCode,codex | Forward prefix + focus terminal       |
+// | 4 | —        | @                | empty   | claudeCode       | Forward prefix + focus terminal       |
+// | 5 | —        | Return           | any     | any              | Submit or newline (setting)           |
 // | 6 | Shift    | Return           | any     | any              | Newline or submit (inverse of 5)      |
-// | 7 | None     | Escape           | any     | any              | Focus terminal or send ESC (setting)  |
-// | 8 | None     | ↑↓←→ Tab BS      | empty   | any              | Forward key to terminal (keep focus)  |
+// | 7 | —        | Escape           | any     | any              | Focus terminal or send ESC (setting)  |
+// | 8 | —        | ↑↓←→ Tab BS      | empty   | any              | Forward key to terminal (keep focus)  |
 // | — | *        | *                | any     | any              | TextBox text input (fallback)         |
 
 /// Normalized input from the three NSTextView interception points.
