@@ -2,6 +2,16 @@
 
 All notable changes to cmux are documented here.
 
+## [0.62.2-tb10] - 2026-03-20
+
+### Added
+- Forward "?" to terminal for help display in Claude Code / Codex (empty TextBox, keep focus)
+- Forward "@" to terminal for Codex @-mentions (previously Claude Code only)
+
+### Changed
+- Default keyboard shortcut behavior changed to Toggle Focus (keep TextBox visible, swap focus)
+- Increase TextBox max visible lines from 6 to 8
+
 ## [0.62.2-tb9] - 2026-03-19
 
 ### Added
