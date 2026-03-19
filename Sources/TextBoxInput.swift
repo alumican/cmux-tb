@@ -131,12 +131,29 @@ enum TextBoxToggleTarget {
 /// Apps that use a command prefix character (e.g. "/" for /commit, /help).
 /// When one of these is running and the TextBox is empty, the command prefix
 /// is forwarded to the terminal so the user can invoke commands directly.
-enum SlashCommandApp: CaseIterable {
+enum TextBoxForwardPrefix: CaseIterable {
     case claudeCode
     case codex
 
-    /// The character that triggers command mode in these apps.
-    static let commandPrefix = "/"
+    /// Prefixes that should be forwarded to the terminal when the TextBox is
+    /// empty. "/" is universal (all apps); "@" is Claude Code only (for @-mentions).
+    func prefixesToForward() -> [String] {
+        switch self {
+        case .claudeCode: return ["/", "@"]
+        case .codex:      return ["/"]
+        }
+    }
+
+    /// Returns the prefix to forward if `str` matches a forwardable prefix
+    /// for any running app, or nil otherwise.
+    static func forwardablePrefix(_ str: String, terminalTitle: String) -> String? {
+        for app in allCases where app.matches(terminalTitle: terminalTitle) {
+            if app.prefixesToForward().contains(str) {
+                return str
+            }
+        }
+        return nil
+    }
 
     /// Regex pattern matched (case-insensitive) against the terminal tab title.
     /// The title may contain leading icons or symbols (e.g. "✱ Claude Code").
@@ -451,8 +468,8 @@ struct TextBoxInputContainer: View {
                         surface.forwardKeyEvent(nsEvent)
                     }
                 },
-                onSlashForward: {
-                    surface.sendText(SlashCommandApp.commandPrefix)
+                onPrefixForward: { prefix in
+                    surface.sendText(prefix)
                     surface.focusTerminalView()
                 },
                 onInputTextViewCreated: onInputTextViewCreated,
@@ -500,7 +517,7 @@ struct TextBoxInputView: NSViewRepresentable {
     let enterToSend: Bool
     @Binding var textViewHeight: CGFloat
     let onKeyEvent: (TextBoxKeyEvent) -> Void
-    let onSlashForward: () -> Void
+    let onPrefixForward: (String) -> Void
     let onInputTextViewCreated: ((InputTextView) -> Void)?
     let terminalBackgroundColor: NSColor
     let terminalForegroundColor: NSColor
@@ -832,13 +849,13 @@ final class InputTextView: NSTextView {
     }
 
     override func insertText(_ string: Any, replacementRange: NSRange) {
-        // Forward the command prefix to the terminal when a slash-command app
-        // (Claude Code, Codex, etc.) is running and the TextBox is empty,
-        // so the user can invoke slash commands directly.
-        if let str = string as? String, str == SlashCommandApp.commandPrefix,
+        // Forward command prefixes to the terminal when the TextBox is empty
+        // and a supported app is running. "/" is forwarded for all apps (slash
+        // commands); "@" is forwarded for Claude Code only (@-mentions).
+        if let str = string as? String,
            self.string.isEmpty,
-           SlashCommandApp.isAnyRunning(terminalTitle: terminalTitle) {
-            inputCoordinator?.parent.onSlashForward()
+           let prefix = TextBoxForwardPrefix.forwardablePrefix(str, terminalTitle: terminalTitle) {
+            inputCoordinator?.parent.onPrefixForward(prefix)
             return
         }
 
