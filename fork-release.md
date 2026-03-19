@@ -41,11 +41,19 @@ xcodebuild -project GhosttyTabs.xcodeproj -scheme cmux -configuration Release -d
 
 Verify the app launches and TextBox works correctly.
 
-### 4. Commit, tag, and push
+### 4. Update changelog
+
+Update `CHANGELOG.md` with user-facing changes for this release.
+
+### 5. Commit, tag, and push
+
+Commit directly to main — do **not** create a PR. Keeping the version bump
+and changelog in the same commit stream as the feature/fix commits makes it
+easy to trace release contents from `git log`.
 
 ```bash
-git add GhosttyTabs.xcodeproj/project.pbxproj
-git commit -m "Bump version to 0.62.2-tb2 (build 80)"
+git add CHANGELOG.md GhosttyTabs.xcodeproj/project.pbxproj
+git commit -m "Bump version to 0.62.2-tb2"
 git tag v0.62.2-tb2
 git push origin main
 git push origin v0.62.2-tb2
@@ -58,7 +66,7 @@ Pushing a `v*-tb*` tag triggers the `release-tb.yml` workflow, which automatical
 4. Creates a styled DMG (`cmux-tb-macos.dmg`)
 5. Uploads the DMG as a GitHub Release asset
 
-### 5. Create a draft release
+### 6. Create a draft release
 
 **Important:** Create the release as a **draft** so the README download link (`releases/latest/download/cmux-tb-macos.dmg`) keeps pointing to the previous release until the DMG is ready.
 
@@ -77,14 +85,14 @@ EOF
 )"
 ```
 
-### 6. Monitor the workflow
+### 7. Monitor the workflow
 
 ```bash
 gh run list --repo alumican/cmux-tb --limit 3
 gh run view <run-id> --repo alumican/cmux-tb
 ```
 
-### 7. Clean up duplicate releases
+### 8. Clean up duplicate releases
 
 CI (`softprops/action-gh-release`) may create a **separate** published release alongside your draft. Check for duplicates:
 
@@ -101,7 +109,7 @@ gh api repos/alumican/cmux-tb/releases --jq '.[] | select(.draft==true and .tag_
 gh api -X DELETE repos/alumican/cmux-tb/releases/<id>
 ```
 
-### 8. Publish the release
+### 9. Publish the release
 
 Once the CI workflow completes, the DMG is attached, and duplicates are cleaned up:
 
