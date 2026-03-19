@@ -3394,7 +3394,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
     // through AppKit's standard key interpretation path, which avoids
     // the garbage character issue.
 
-    func sendKey(_ key: TerminalKey) {
+    func sendKey(_ key: TextBoxKeyRouting.TerminalKey) {
         sendSyntheticKey(characters: key.characters, keyCode: key.keyCode)
     }
 
