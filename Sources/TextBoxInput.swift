@@ -395,7 +395,7 @@ enum TextBoxInputSettings {
     static let defaultEnabled = true
     static let defaultEnterToSend = true
     static let defaultEscapeBehavior = TextBoxEscapeBehavior.sendEscape
-    static let defaultShortcutBehavior = TextBoxShortcutBehavior.toggleDisplay
+    static let defaultShortcutBehavior = TextBoxShortcutBehavior.toggleFocus
 
     /// Opacity applied to settings rows when TextBox is disabled.
     static let disabledSettingsOpacity: Double = 0.5
