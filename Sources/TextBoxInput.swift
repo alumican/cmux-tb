@@ -23,11 +23,9 @@
 // - **Multi-line input**: Insert newlines for multi-line text submission.
 //   Enter=send / Shift+Enter=newline by default (reversible in settings)
 // - **Auto-grow**: Text box grows with content (1–5 lines), then scrolls internally
-// - **Shell history integration**: When TextBox is empty, arrow keys / Tab /
-//   Backspace are forwarded to the terminal for shell completion and history
-// - **Ctrl+key forwarding**: Ctrl+C/Z etc. are always forwarded to the
-//   terminal regardless of TextBox content. Emacs-style editing keys
-//   (Ctrl+A/E/F/B/N/P/K/D/H) are handled by the TextBox natively.
+// - **Key routing**: Ctrl+key forwarding, Emacs editing, shell history,
+//   prefix forwarding (/, @) — all rules are defined in `TextBoxKeyRouting`
+//   as a centralized table. See the rule table comment above that enum.
 // - **Theme sync**: Automatically matches terminal background/foreground colors and font
 // - **Show/Hide**: Cmd+Option+T to show/hide with focus coordination
 //
@@ -126,34 +124,13 @@ enum TextBoxToggleTarget {
     static var `default`: TextBoxToggleTarget { TextBoxBehavior.toggleScope }
 }
 
-// MARK: - Slash Command App Detection
+// MARK: - App Detection
 
-/// Apps that use a command prefix character (e.g. "/" for /commit, /help).
-/// When one of these is running and the TextBox is empty, the command prefix
-/// is forwarded to the terminal so the user can invoke commands directly.
-enum TextBoxForwardPrefix: CaseIterable {
+/// Terminal apps detected by tab title for key routing decisions.
+/// Used by `TextBoxKeyRouting` to determine which prefixes to forward.
+enum TextBoxAppDetection: CaseIterable {
     case claudeCode
     case codex
-
-    /// Prefixes that should be forwarded to the terminal when the TextBox is
-    /// empty. "/" is universal (all apps); "@" is Claude Code only (for @-mentions).
-    func prefixesToForward() -> [String] {
-        switch self {
-        case .claudeCode: return ["/", "@"]
-        case .codex:      return ["/"]
-        }
-    }
-
-    /// Returns the prefix to forward if `str` matches a forwardable prefix
-    /// for any running app, or nil otherwise.
-    static func forwardablePrefix(_ str: String, terminalTitle: String) -> String? {
-        for app in allCases where app.matches(terminalTitle: terminalTitle) {
-            if app.prefixesToForward().contains(str) {
-                return str
-            }
-        }
-        return nil
-    }
 
     /// Regex pattern matched (case-insensitive) against the terminal tab title.
     /// The title may contain leading icons or symbols (e.g. "✱ Claude Code").
@@ -170,11 +147,6 @@ enum TextBoxForwardPrefix: CaseIterable {
             of: tabTitlePattern,
             options: [.caseInsensitive, .regularExpression]
         ) != nil
-    }
-
-    /// Returns true if any slash-command app is detected in the terminal title.
-    static func isAnyRunning(terminalTitle: String) -> Bool {
-        allCases.contains { $0.matches(terminalTitle: terminalTitle) }
     }
 }
 
@@ -228,6 +200,175 @@ enum TextBoxFocusState {
     }
 }
 
+// MARK: - Key Routing
+//
+// All TextBox key handling is governed by the rule table below.
+// Rules are evaluated top-down; the first match wins. Unmatched
+// keys fall through to default TextBox text input.
+//
+// Rules are evaluated within each input path (keyDown / insertText /
+// doCommand). Groups never overlap because each NSTextView interception
+// point produces a distinct input type.
+//
+// | # | Modifier | Key              | TextBox | App              | Action                                |
+// |---|----------|------------------|---------|------------------|---------------------------------------|
+// | 1 | Ctrl     | A/E/F/B/N/P/K/H  | any     | any              | Emacs editing (handled by NSTextView) |
+// | 2 | Ctrl     | * (other)        | any     | any              | Forward to terminal (keep focus)      |
+// | 3 | None     | /                | empty   | claudeCode,codex | Forward prefix + focus terminal       |
+// | 4 | None     | @                | empty   | claudeCode       | Forward prefix + focus terminal       |
+// | 5 | None     | Return           | any     | any              | Submit or newline (setting)           |
+// | 6 | Shift    | Return           | any     | any              | Newline or submit (inverse of 5)      |
+// | 7 | None     | Escape           | any     | any              | Focus terminal or send ESC (setting)  |
+// | 8 | None     | ↑↓←→ Tab BS      | empty   | any              | Forward key to terminal (keep focus)  |
+// | — | *        | *                | any     | any              | TextBox text input (fallback)         |
+
+/// Normalized input from the three NSTextView interception points.
+enum TextBoxKeyInput {
+    /// From keyDown(): Ctrl + character key.
+    case ctrl(String)
+    /// From insertText(): committed text character.
+    case text(String)
+    /// From doCommand(): AppKit-interpreted command selector.
+    case command(Selector, shifted: Bool)
+}
+
+/// Routing result — tells the caller what action to take.
+enum TextBoxKeyAction {
+    /// Rule 1: Pass to NSTextView for Emacs-style editing.
+    case emacsEdit
+    /// Rule 2: Forward raw Ctrl+key event to terminal (keep focus).
+    case forwardControl
+    /// Rule 3/4: Forward prefix character to terminal and move focus.
+    case forwardPrefix(String)
+    /// Rule 5/6: Send TextBox content to terminal.
+    case submit
+    /// Rule 5/6: Insert newline into TextBox.
+    case insertNewline
+    /// Rule 7: Escape action (setting-dependent).
+    case escape
+    /// Rule 8: Forward interpreted key to terminal (keep focus).
+    case forwardKey(TextBoxKeyRouting.TerminalKey)
+    /// Fallback: Default TextBox text input.
+    case textInput
+}
+
+/// Centralized key routing for TextBox. All routing decisions are made here;
+/// each NSTextView interception point (`keyDown`, `insertText`, `doCommand`)
+/// converts its input to `TextBoxKeyInput` and calls `route()`.
+///
+/// All key definitions are collected in this enum so new rules can be added
+/// in one place without touching the interception points.
+enum TextBoxKeyRouting {
+
+    // MARK: Key Definitions
+
+    /// Named keys that TextBox forwards to the terminal via synthetic NSEvents.
+    enum TerminalKey {
+        case returnKey, arrowUp, arrowDown, arrowLeft, arrowRight, tab, backspace, escape
+
+        var characters: String {
+            switch self {
+            case .returnKey: return "\r"
+            case .arrowUp:   return "\u{F700}"
+            case .arrowDown: return "\u{F701}"
+            case .arrowLeft: return "\u{F702}"
+            case .arrowRight: return "\u{F703}"
+            case .tab:       return "\t"
+            case .backspace: return "\u{7F}"
+            case .escape:    return "\u{1B}"
+            }
+        }
+
+        var keyCode: UInt16 {
+            switch self {
+            case .returnKey: return 36
+            case .arrowUp:   return 126
+            case .arrowDown: return 125
+            case .arrowLeft: return 123
+            case .arrowRight: return 124
+            case .tab:       return 48
+            case .backspace: return 51
+            case .escape:    return 53
+            }
+        }
+    }
+
+    /// Rule 1: Emacs editing keys — Ctrl+key handled locally by NSTextView.
+    private static let emacsEditingKeys: Set<String> = [
+        "a",  // moveToBeginningOfLine:
+        "e",  // moveToEndOfLine:
+        "f",  // moveForward:
+        "b",  // moveBackward:
+        "n",  // moveDown:
+        "p",  // moveUp:
+        "k",  // deleteToEndOfLine: (via killLine:)
+        "h",  // deleteBackward:
+    ]
+
+    /// Rules 5, 6: Prefixes forwarded to terminal when TextBox is empty.
+    /// Per-app prefix sets are defined in `TextBoxAppDetection`.
+    private static let prefixForwardKeys: [TextBoxAppDetection: [String]] = [
+        .claudeCode: ["/", "@"],
+        .codex:      ["/"],
+    ]
+
+    /// Rule 7: Selectors forwarded to terminal when TextBox is empty.
+    private static let emptyStateSelectors: [Selector: TerminalKey] = [
+        #selector(NSResponder.moveUp(_:)):         .arrowUp,
+        #selector(NSResponder.moveDown(_:)):       .arrowDown,
+        #selector(NSResponder.moveLeft(_:)):       .arrowLeft,
+        #selector(NSResponder.moveRight(_:)):      .arrowRight,
+        #selector(NSResponder.insertTab(_:)):      .tab,
+        #selector(NSResponder.deleteBackward(_:)): .backspace,
+    ]
+
+    // MARK: Routing
+
+    /// Single entry point for all key routing decisions.
+    static func route(
+        _ input: TextBoxKeyInput,
+        isEmpty: Bool,
+        terminalTitle: String,
+        enterToSend: Bool
+    ) -> TextBoxKeyAction {
+        switch input {
+
+        // Rules 1, 2: Ctrl+key
+        case .ctrl(let char):
+            if emacsEditingKeys.contains(char) { return .emacsEdit }      // Rule 1
+            return .forwardControl                                        // Rule 2
+
+        // Rules 3, 4, fallback: Inserted text
+        case .text(let str):
+            if isEmpty {
+                for (app, prefixes) in prefixForwardKeys
+                    where prefixes.contains(str) && app.matches(terminalTitle: terminalTitle) {
+                    return .forwardPrefix(str)                            // Rule 3, 4
+                }
+            }
+            return .textInput                                             // Fallback
+
+        // Rules 5, 6, 7, 8: Command selectors
+        case .command(let selector, let shifted):
+            // Rule 5, 6: Return
+            if selector == #selector(NSResponder.insertNewline(_:)) ||
+               selector == #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)) {
+                let shouldSend = enterToSend ? !shifted : shifted
+                return shouldSend ? .submit : .insertNewline
+            }
+            // Rule 7: Escape
+            if selector == #selector(NSResponder.cancelOperation(_:)) {
+                return .escape
+            }
+            // Rule 8: Empty-state navigation
+            if isEmpty, let key = emptyStateSelectors[selector] {
+                return .forwardKey(key)
+            }
+            return .textInput                                             // Fallback
+        }
+    }
+}
+
 // MARK: - Key Events
 
 /// Events dispatched from the TextBox to its parent for terminal forwarding.
@@ -237,42 +378,9 @@ enum TextBoxKeyEvent {
     /// User pressed Escape.
     case escape
     /// A named key to forward to the terminal (arrows, Tab, Backspace).
-    case key(TerminalKey)
+    case key(TextBoxKeyRouting.TerminalKey)
     /// A Ctrl+key combination to forward as a raw NSEvent.
     case control(NSEvent)
-}
-
-// MARK: - Terminal Key
-
-/// Named keys that TextBox forwards to the terminal via synthetic NSEvents.
-enum TerminalKey {
-    case returnKey, arrowUp, arrowDown, arrowLeft, arrowRight, tab, backspace, escape
-
-    var characters: String {
-        switch self {
-        case .returnKey: return "\r"
-        case .arrowUp:   return "\u{F700}"
-        case .arrowDown: return "\u{F701}"
-        case .arrowLeft: return "\u{F702}"
-        case .arrowRight: return "\u{F703}"
-        case .tab:       return "\t"
-        case .backspace: return "\u{7F}"
-        case .escape:    return "\u{1B}"
-        }
-    }
-
-    var keyCode: UInt16 {
-        switch self {
-        case .returnKey: return 36
-        case .arrowUp:   return 126
-        case .arrowDown: return 125
-        case .arrowLeft: return 123
-        case .arrowRight: return 124
-        case .tab:       return 48
-        case .backspace: return 51
-        case .escape:    return 53
-        }
-    }
 }
 
 // MARK: - Settings
@@ -692,59 +800,6 @@ struct TextBoxInputView: NSViewRepresentable {
             parent.textViewHeight = contentHeight
         }
 
-        /// Returns true if the action was handled (consumed).
-        func handleCommand(_ selector: Selector) -> Bool {
-            if selector == #selector(NSResponder.insertNewline(_:)) ||
-               selector == #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)) {
-                let shifted = NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false
-                return handleNewline(shifted: shifted)
-            }
-            if selector == #selector(NSResponder.cancelOperation(_:)) {
-                parent.onKeyEvent(.escape)
-                return true
-            }
-
-            // Map selectors to terminal keys — forwarded only when TextBox is empty.
-            let keyMap: [Selector: TerminalKey] = [
-                #selector(NSResponder.moveUp(_:)):         .arrowUp,
-                #selector(NSResponder.moveDown(_:)):       .arrowDown,
-                #selector(NSResponder.moveLeft(_:)):       .arrowLeft,
-                #selector(NSResponder.moveRight(_:)):      .arrowRight,
-                #selector(NSResponder.insertTab(_:)):      .tab,
-                #selector(NSResponder.deleteBackward(_:)): .backspace,
-            ]
-            if let key = keyMap[selector] {
-                return handleEmpty { parent.onKeyEvent(.key(key)) }
-            }
-            return false
-        }
-
-        /// Forward action to terminal only when TextBox is empty.
-        /// When the user is typing text, arrow keys etc. should navigate
-        /// within the TextBox normally. Forwarding only when empty prevents
-        /// accidentally losing in-progress input.
-        private func handleEmpty(_ action: () -> Void) -> Bool {
-            guard let textView = textView, textView.string.isEmpty else { return false }
-            action()
-            return true
-        }
-
-        private func handleNewline(shifted: Bool) -> Bool {
-            let shouldSend: Bool
-            if parent.enterToSend {
-                shouldSend = !shifted
-            } else {
-                shouldSend = shifted
-            }
-
-            if shouldSend {
-                parent.onKeyEvent(.submit)
-                return true
-            }
-            textView?.insertNewlineIgnoringFieldEditor(nil)
-            return true
-        }
-
     }
 }
 
@@ -807,7 +862,7 @@ private struct TextBoxSendButtonBody: View {
 final class InputTextView: NSTextView {
     weak var inputCoordinator: TextBoxInputView.Coordinator?
     var enterToSend: Bool = false
-    /// Current terminal process title, used for slash-command app detection.
+    /// Current terminal process title, used for app detection in key routing.
     var terminalTitle: String = ""
 
     override func draw(_ dirtyRect: NSRect) {
@@ -849,57 +904,62 @@ final class InputTextView: NSTextView {
     }
 
     override func insertText(_ string: Any, replacementRange: NSRange) {
-        // Forward command prefixes to the terminal when the TextBox is empty
-        // and a supported app is running. "/" is forwarded for all apps (slash
-        // commands); "@" is forwarded for Claude Code only (@-mentions).
-        if let str = string as? String,
-           self.string.isEmpty,
-           let prefix = TextBoxForwardPrefix.forwardablePrefix(str, terminalTitle: terminalTitle) {
-            inputCoordinator?.parent.onPrefixForward(prefix)
-            return
+        if let str = string as? String {
+            let action = TextBoxKeyRouting.route(
+                .text(str), isEmpty: self.string.isEmpty,
+                terminalTitle: terminalTitle, enterToSend: enterToSend)
+            switch action {
+            case .forwardPrefix(let prefix):
+                inputCoordinator?.parent.onPrefixForward(prefix)
+                return
+            case .textInput:
+                break  // fall through to super
+            default:
+                break
+            }
         }
-
         super.insertText(string, replacementRange: replacementRange)
     }
 
-    /// Emacs-style editing keys that should be handled by the TextBox
-    /// (NSTextView) instead of being forwarded to the terminal.
-    /// macOS NSTextView natively supports these bindings via the standard
-    /// key binding mechanism, so passing them to `super.keyDown` is sufficient.
-    private static let emacsEditingKeys: Set<String> = [
-        "a",  // moveToBeginningOfLine:
-        "e",  // moveToEndOfLine:
-        "f",  // moveForward:
-        "b",  // moveBackward:
-        "n",  // moveDown:
-        "p",  // moveUp:
-        "k",  // deleteToEndOfLine: (via killLine:)
-        "h",  // deleteBackward:
-    ]
-
     override func keyDown(with event: NSEvent) {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        if flags.contains(.control) {
-            // Let Emacs-style editing keys be handled natively by NSTextView.
-            // All other Ctrl+key combinations (Ctrl+C, Ctrl+Z, etc.) are
-            // forwarded to the terminal for shell control.
-            if let chars = event.charactersIgnoringModifiers,
-               Self.emacsEditingKeys.contains(chars) {
+        if flags.contains(.control),
+           let chars = event.charactersIgnoringModifiers {
+            let action = TextBoxKeyRouting.route(
+                .ctrl(chars), isEmpty: string.isEmpty,
+                terminalTitle: terminalTitle, enterToSend: enterToSend)
+            switch action {
+            case .emacsEdit:
                 super.keyDown(with: event)
-                return
+            case .forwardControl:
+                inputCoordinator?.parent.onKeyEvent(.control(event))
+            default:
+                break
             }
-            inputCoordinator?.parent.onKeyEvent(.control(event))
             return
         }
-
         super.keyDown(with: event)
     }
 
     override func doCommand(by selector: Selector) {
-        if let coordinator = inputCoordinator, coordinator.handleCommand(selector) {
-            return
+        let shifted = NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false
+        let action = TextBoxKeyRouting.route(
+            .command(selector, shifted: shifted), isEmpty: string.isEmpty,
+            terminalTitle: terminalTitle, enterToSend: enterToSend)
+        switch action {
+        case .submit:
+            inputCoordinator?.parent.onKeyEvent(.submit)
+        case .insertNewline:
+            insertNewlineIgnoringFieldEditor(nil)
+        case .escape:
+            inputCoordinator?.parent.onKeyEvent(.escape)
+        case .forwardKey(let key):
+            inputCoordinator?.parent.onKeyEvent(.key(key))
+        case .textInput:
+            super.doCommand(by: selector)
+        default:
+            super.doCommand(by: selector)
         }
-        super.doCommand(by: selector)
     }
 }
 

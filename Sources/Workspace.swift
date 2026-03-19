@@ -1892,8 +1892,8 @@ final class Workspace: Identifiable, ObservableObject {
             didMutate = true
         }
 
-        // [TextBox] Keep TerminalPanel.title in sync so TextBox can detect
-        // slash-command apps (Claude Code, Codex) by terminal process title.
+        // [TextBox] Keep TerminalPanel.title in sync so TextBox key routing
+        // can detect running apps (Claude Code, Codex) by terminal process title.
         if didMutate, let terminalPanel = panels[panelId] as? TerminalPanel {
             terminalPanel.updateTitle(trimmed)
         }
