@@ -182,27 +182,6 @@ enum TextBoxFocusState {
         return .visibleUnfocused
     }
 
-    /// Move keyboard focus to the InputTextView in the given window.
-    static func focusTextBox(in window: NSWindow?) {
-        guard let window else { return }
-        if let textView = findInputTextView(in: window.contentView) {
-            window.makeFirstResponder(textView)
-        }
-    }
-
-    /// Recursively search for InputTextView in the view hierarchy.
-    private static func findInputTextView(in view: NSView?) -> InputTextView? {
-        guard let view else { return nil }
-        if let inputTextView = view as? InputTextView {
-            return inputTextView
-        }
-        for subview in view.subviews {
-            if let found = findInputTextView(in: subview) {
-                return found
-            }
-        }
-        return nil
-    }
 }
 
 // MARK: - Key Routing
