@@ -619,6 +619,24 @@ final class FileDropOverlayView: NSView {
         if let webView {
             return webView.performDragOperation(sender)
         }
+
+        // [TextBox] Forward file drops to TextBox when the cursor is over it.
+        // Read URLs from the pasteboard synchronously (before the drag session
+        // ends and the pasteboard is invalidated), then dispatch the actual
+        // text insertion asynchronously so performDragOperation returns
+        // immediately and AppKit can finish the drag session animation without
+        // blocking the UI update.
+        if let textBox = textBoxUnderPoint(sender.draggingLocation) {
+            if let fileURLs = sender.draggingPasteboard.readObjects(
+                forClasses: [NSURL.self],
+                options: [.urlReadingFileURLsOnly: true]
+            ) as? [URL], !fileURLs.isEmpty {
+                textBox.insertDroppedFilePaths(fileURLs)
+                return true
+            }
+            return false
+        }
+        
         guard let terminal else { return false }
         return terminal.performDragOperation(sender)
     }
@@ -644,6 +662,15 @@ final class FileDropOverlayView: NSView {
                 return webView.draggingEntered(sender)
             }
             return webView.draggingUpdated(sender)
+        }
+
+        // [TextBox] When the cursor is over the TextBox, return .copy so the
+        // green "+" badge appears and the drop is accepted. Without this check,
+        // drags over the TextBox area would fall through to the terminal target
+        // check and show no drop indicator because the TextBox is not a
+        // GhosttyNSView. Must come before the terminal check so it takes priority.
+        if shouldCapture, textBoxUnderPoint(loc) != nil {
+            return .copy
         }
 
         let hasTerminalTarget = terminalUnderPoint(loc) != nil
@@ -814,6 +841,34 @@ final class FileDropOverlayView: NSView {
         )
     }
 #endif
+
+    /// [TextBox] Finds an InputTextView (TextBox) under the given window point.
+    /// Unlike terminalUnderPoint, this does NOT rely on hitTest because the
+    /// terminal portal layer sits above the TextBox in the view hierarchy and
+    /// would intercept the hit. Instead, we walk the view tree to find all
+    /// InputTextView instances and check if the point falls within their frame.
+    func textBoxUnderPoint(_ windowPoint: NSPoint) -> InputTextView? {
+        guard let window, let contentView = window.contentView else { return nil }
+        return findTextBox(in: contentView, windowPoint: windowPoint)
+    }
+
+    /// [TextBox] Recursively walks the view hierarchy starting from `view`,
+    /// returning the first InputTextView whose bounds contain `windowPoint`.
+    private func findTextBox(in view: NSView, windowPoint: NSPoint) -> InputTextView? {
+        if let textBox = view as? InputTextView {
+            let localPoint = textBox.convert(windowPoint, from: nil)
+            if textBox.bounds.contains(localPoint) {
+                return textBox
+            }
+        }
+        for subview in view.subviews {
+            if let found = findTextBox(in: subview, windowPoint: windowPoint) {
+                return found
+            }
+        }
+        return nil
+    }
+
     /// Hit-tests the window to find the GhosttyNSView under the cursor.
     func terminalUnderPoint(_ windowPoint: NSPoint) -> GhosttyNSView? {
         if let window,

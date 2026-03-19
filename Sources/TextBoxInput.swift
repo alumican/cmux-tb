@@ -704,6 +704,11 @@ struct TextBoxInputView: NSViewRepresentable {
         textView.drawsBackground = false
         textView.insertionPointColor = terminalForegroundColor
         textView.textColor = terminalForegroundColor
+        // Match terminal selection colors: foreground on background inverted.
+        textView.selectedTextAttributes = [
+            .backgroundColor: terminalForegroundColor,
+            .foregroundColor: terminalBackgroundColor.withAlphaComponent(1.0),
+        ]
         textView.font = adjustedFont
         textView.typingAttributes = makeTypingAttributes()
         textView.defaultParagraphStyle = makeParagraphStyle()
@@ -758,6 +763,10 @@ struct TextBoxInputView: NSViewRepresentable {
         textView.terminalTitle = terminalTitle
         textView.insertionPointColor = terminalForegroundColor
         textView.textColor = terminalForegroundColor
+        textView.selectedTextAttributes = [
+            .backgroundColor: terminalForegroundColor,
+            .foregroundColor: terminalBackgroundColor.withAlphaComponent(1.0),
+        ]
         textView.typingAttributes = makeTypingAttributes()
         let isFocused = textView.window?.firstResponder === textView
         let opacity = isFocused
@@ -864,6 +873,42 @@ final class InputTextView: NSTextView {
     var enterToSend: Bool = false
     /// Current terminal process title, used for app detection in key routing.
     var terminalTitle: String = ""
+
+    // Shell-escape characters matching terminal drag-and-drop behavior.
+    private static let shellEscapeCharacters = "\\ ()[]{}<>\"'`!#$&;|*?\t"
+
+    private static func escapeForShell(_ value: String) -> String {
+        var result = value
+        for char in shellEscapeCharacters {
+            result = result.replacingOccurrences(of: String(char), with: "\\\(char)")
+        }
+        return result
+    }
+
+    /// Insert shell-escaped file paths, focus the TextBox, and select the
+    /// inserted text. Called from FileDropOverlayView when a Finder file drag
+    /// is dropped over the TextBox area.
+    ///
+    /// Uses asyncAfter(0.05s) because the drop is routed through
+    /// FileDropOverlayView's performDragOperation, and synchronous text
+    /// insertion during a drag session stalls until the next mouse event.
+    func insertDroppedFilePaths(_ urls: [URL]) {
+        let escaped = urls
+            .map { Self.escapeForShell($0.path) }
+            .joined(separator: " ")
+
+        let capturedWindow = window
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            guard let self else { return }
+            let range = capturedWindow?.firstResponder === self
+                ? self.selectedRange()
+                : NSRange(location: self.string.count, length: 0)
+            let insertionPoint = range.location
+            capturedWindow?.makeFirstResponder(self)
+            self.insertText(escaped, replacementRange: range)
+            self.setSelectedRange(NSRange(location: insertionPoint, length: (escaped as NSString).length))
+        }
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
