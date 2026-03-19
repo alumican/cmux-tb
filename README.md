@@ -135,7 +135,7 @@ All standard cmux shortcuts continue to work. See the [cmux README](https://gith
 | Enable Mode | On | Enable TextBox input |
 | Send on Return | On | Return sends text, Shift+Return inserts newline (swap when off) |
 | Escape Key | Send ESC Key | Action when pressing ESC (Focus Terminal / Send ESC Key) |
-| Keyboard Shortcut (⌘⌥T) | Toggle Display | **Toggle Display**: show/hide TextBox. **Toggle Focus**: switch focus between TextBox and terminal |
+| Keyboard Shortcut (⌘⌥T) | Toggle Focus | **Toggle Focus**: switch focus between TextBox and terminal. **Toggle Display**: show/hide TextBox |
 
 ## 📄 License
 
