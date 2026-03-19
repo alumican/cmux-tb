@@ -212,15 +212,15 @@ enum TextBoxFocusState {
 //
 // | # | Modifier | Key              | TextBox | App              | Action                                |
 // |---|----------|------------------|---------|------------------|---------------------------------------|
-// | 1 | Ctrl     | A/E/F/B/N/P/K/H  | any     | any              | Emacs editing (handled by NSTextView) |
+// | 1 | Ctrl     | A E F B N P K H  | any     | any              | Emacs editing (handled by NSTextView) |
 // | 2 | Ctrl     | * (other)        | any     | any              | Forward to terminal (keep focus)      |
-// | 3 | —        | /                | empty   | claudeCode,codex | Forward prefix + focus terminal       |
-// | 4 | —        | @                | empty   | claudeCode       | Forward prefix + focus terminal       |
-// | 5 | —        | Return           | any     | any              | Submit or newline (setting)           |
+// | 3 |          | /                | empty   | claudeCode,codex | Forward prefix + focus terminal       |
+// | 4 |          | @                | empty   | claudeCode       | Forward prefix + focus terminal       |
+// | 5 |          | Return           | any     | any              | Submit or newline (setting)           |
 // | 6 | Shift    | Return           | any     | any              | Newline or submit (inverse of 5)      |
-// | 7 | —        | Escape           | any     | any              | Focus terminal or send ESC (setting)  |
-// | 8 | —        | ↑↓←→ Tab BS      | empty   | any              | Forward key to terminal (keep focus)  |
-// | — | *        | *                | any     | any              | TextBox text input (fallback)         |
+// | 7 |          | Escape           | any     | any              | Focus terminal or send ESC (setting)  |
+// | 8 |          | ↑ ↓ ← → Tab BS   | empty   | any              | Forward key to terminal (keep focus)  |
+// | 9 | *        | *                | any     | any              | TextBox text input (fallback)         |
 
 /// Normalized input from the three NSTextView interception points.
 enum TextBoxKeyInput {
@@ -346,7 +346,7 @@ enum TextBoxKeyRouting {
                     return .forwardPrefix(str)                            // Rule 3, 4
                 }
             }
-            return .textInput                                             // Fallback
+            return .textInput                                             // Rule 9 (Fallback)
 
         // Rules 5, 6, 7, 8: Command selectors
         case .command(let selector, let shifted):
@@ -364,7 +364,7 @@ enum TextBoxKeyRouting {
             if isEmpty, let key = emptyStateSelectors[selector] {
                 return .forwardKey(key)
             }
-            return .textInput                                             // Fallback
+            return .textInput                                             // Rule 9 (Fallback)
         }
     }
 }
