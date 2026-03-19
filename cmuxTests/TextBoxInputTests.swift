@@ -89,3 +89,228 @@ final class TextBoxShortcutTests: XCTestCase {
         XCTAssertEqual(loaded, KeyboardShortcutSettings.Action.toggleTextBoxInput.defaultShortcut)
     }
 }
+
+// MARK: - TextBoxKeyRouting Tests
+
+final class TextBoxKeyRoutingTests: XCTestCase {
+
+    // Helper to call route() with common defaults.
+    private func route(
+        _ input: TextBoxKeyInput,
+        isEmpty: Bool = false,
+        terminalTitle: String = "",
+        enterToSend: Bool = true
+    ) -> TextBoxKeyAction {
+        TextBoxKeyRouting.route(input, isEmpty: isEmpty, terminalTitle: terminalTitle, enterToSend: enterToSend)
+    }
+
+    // MARK: Rule 1 — Emacs editing (Ctrl + A/E/F/B/N/P/K/H)
+
+    func testCtrlEmacsKeysReturnEmacsEdit() {
+        for key in ["a", "e", "f", "b", "n", "p", "k", "h"] {
+            let action = route(.ctrl(key))
+            guard case .emacsEdit = action else {
+                XCTFail("Ctrl+\(key) should be .emacsEdit, got \(action)")
+                return
+            }
+        }
+    }
+
+    // MARK: Rule 2 — Ctrl+other → forward to terminal
+
+    func testCtrlNonEmacsKeysReturnForwardControl() {
+        for key in ["c", "z", "d", "l", "r"] {
+            let action = route(.ctrl(key))
+            guard case .forwardControl = action else {
+                XCTFail("Ctrl+\(key) should be .forwardControl, got \(action)")
+                return
+            }
+        }
+    }
+
+    // MARK: Rule 3 — "/" prefix forwarding (empty + app detected)
+
+    func testSlashForwardWhenEmptyAndClaudeCodeRunning() {
+        let action = route(.text("/"), isEmpty: true, terminalTitle: "Claude Code")
+        guard case .forwardPrefix("/") = action else {
+            XCTFail("Expected .forwardPrefix(\"/\"), got \(action)")
+            return
+        }
+    }
+
+    func testSlashForwardWhenEmptyAndCodexRunning() {
+        let action = route(.text("/"), isEmpty: true, terminalTitle: "Codex")
+        guard case .forwardPrefix("/") = action else {
+            XCTFail("Expected .forwardPrefix(\"/\"), got \(action)")
+            return
+        }
+    }
+
+    func testSlashNotForwardedWhenNotEmpty() {
+        let action = route(.text("/"), isEmpty: false, terminalTitle: "Claude Code")
+        guard case .textInput = action else {
+            XCTFail("Expected .textInput, got \(action)")
+            return
+        }
+    }
+
+    func testSlashNotForwardedWhenNoAppDetected() {
+        let action = route(.text("/"), isEmpty: true, terminalTitle: "zsh")
+        guard case .textInput = action else {
+            XCTFail("Expected .textInput, got \(action)")
+            return
+        }
+    }
+
+    // MARK: Rule 4 — "@" prefix forwarding (empty + Claude Code only)
+
+    func testAtForwardWhenEmptyAndClaudeCodeRunning() {
+        let action = route(.text("@"), isEmpty: true, terminalTitle: "Claude Code")
+        guard case .forwardPrefix("@") = action else {
+            XCTFail("Expected .forwardPrefix(\"@\"), got \(action)")
+            return
+        }
+    }
+
+    func testAtNotForwardedForCodex() {
+        let action = route(.text("@"), isEmpty: true, terminalTitle: "Codex")
+        guard case .textInput = action else {
+            XCTFail("Expected .textInput for Codex + @, got \(action)")
+            return
+        }
+    }
+
+    func testAtNotForwardedWhenNotEmpty() {
+        let action = route(.text("@"), isEmpty: false, terminalTitle: "Claude Code")
+        guard case .textInput = action else {
+            XCTFail("Expected .textInput, got \(action)")
+            return
+        }
+    }
+
+    // MARK: Rule 5/6 — Return (setting-dependent)
+
+    func testReturnSubmitsWhenEnterToSendAndNotShifted() {
+        let action = route(.command(#selector(NSResponder.insertNewline(_:)), shifted: false), enterToSend: true)
+        guard case .submit = action else {
+            XCTFail("Expected .submit, got \(action)")
+            return
+        }
+    }
+
+    func testShiftReturnInsertsNewlineWhenEnterToSend() {
+        let action = route(.command(#selector(NSResponder.insertNewline(_:)), shifted: true), enterToSend: true)
+        guard case .insertNewline = action else {
+            XCTFail("Expected .insertNewline, got \(action)")
+            return
+        }
+    }
+
+    func testReturnInsertsNewlineWhenNotEnterToSend() {
+        let action = route(.command(#selector(NSResponder.insertNewline(_:)), shifted: false), enterToSend: false)
+        guard case .insertNewline = action else {
+            XCTFail("Expected .insertNewline, got \(action)")
+            return
+        }
+    }
+
+    func testShiftReturnSubmitsWhenNotEnterToSend() {
+        let action = route(.command(#selector(NSResponder.insertNewline(_:)), shifted: true), enterToSend: false)
+        guard case .submit = action else {
+            XCTFail("Expected .submit, got \(action)")
+            return
+        }
+    }
+
+    // MARK: Rule 7 — Escape
+
+    func testEscapeReturnsEscape() {
+        let action = route(.command(#selector(NSResponder.cancelOperation(_:)), shifted: false))
+        guard case .escape = action else {
+            XCTFail("Expected .escape, got \(action)")
+            return
+        }
+    }
+
+    // MARK: Rule 8 — Empty-state navigation forwarding
+
+    func testArrowUpForwardedWhenEmpty() {
+        let action = route(.command(#selector(NSResponder.moveUp(_:)), shifted: false), isEmpty: true)
+        guard case .forwardKey(.arrowUp) = action else {
+            XCTFail("Expected .forwardKey(.arrowUp), got \(action)")
+            return
+        }
+    }
+
+    func testArrowDownForwardedWhenEmpty() {
+        let action = route(.command(#selector(NSResponder.moveDown(_:)), shifted: false), isEmpty: true)
+        guard case .forwardKey(.arrowDown) = action else {
+            XCTFail("Expected .forwardKey(.arrowDown), got \(action)")
+            return
+        }
+    }
+
+    func testTabForwardedWhenEmpty() {
+        let action = route(.command(#selector(NSResponder.insertTab(_:)), shifted: false), isEmpty: true)
+        guard case .forwardKey(.tab) = action else {
+            XCTFail("Expected .forwardKey(.tab), got \(action)")
+            return
+        }
+    }
+
+    func testBackspaceForwardedWhenEmpty() {
+        let action = route(.command(#selector(NSResponder.deleteBackward(_:)), shifted: false), isEmpty: true)
+        guard case .forwardKey(.backspace) = action else {
+            XCTFail("Expected .forwardKey(.backspace), got \(action)")
+            return
+        }
+    }
+
+    func testArrowUpNotForwardedWhenNotEmpty() {
+        let action = route(.command(#selector(NSResponder.moveUp(_:)), shifted: false), isEmpty: false)
+        guard case .textInput = action else {
+            XCTFail("Expected .textInput when not empty, got \(action)")
+            return
+        }
+    }
+
+    // MARK: Rule 9 — Fallback (textInput)
+
+    func testRegularTextReturnsTextInput() {
+        let action = route(.text("a"), isEmpty: false)
+        guard case .textInput = action else {
+            XCTFail("Expected .textInput, got \(action)")
+            return
+        }
+    }
+
+    func testUnknownSelectorReturnsTextInput() {
+        let action = route(.command(#selector(NSResponder.selectAll(_:)), shifted: false))
+        guard case .textInput = action else {
+            XCTFail("Expected .textInput for unknown selector, got \(action)")
+            return
+        }
+    }
+}
+
+// MARK: - TextBoxAppDetection Tests
+
+final class TextBoxAppDetectionTests: XCTestCase {
+
+    func testClaudeCodeDetected() {
+        XCTAssertTrue(TextBoxAppDetection.claudeCode.matches(terminalTitle: "Claude Code"))
+    }
+
+    func testClaudeCodeDetectedWithIcon() {
+        XCTAssertTrue(TextBoxAppDetection.claudeCode.matches(terminalTitle: "✱ Claude Code"))
+    }
+
+    func testCodexDetected() {
+        XCTAssertTrue(TextBoxAppDetection.codex.matches(terminalTitle: "Codex"))
+    }
+
+    func testPlainShellNotDetected() {
+        XCTAssertFalse(TextBoxAppDetection.claudeCode.matches(terminalTitle: "zsh"))
+        XCTAssertFalse(TextBoxAppDetection.codex.matches(terminalTitle: "zsh"))
+    }
+}
