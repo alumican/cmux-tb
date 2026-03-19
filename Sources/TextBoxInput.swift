@@ -24,8 +24,9 @@
 //   Enter=send / Shift+Enter=newline by default (reversible in settings)
 // - **Auto-grow**: Text box grows with content (1–8 lines), then scrolls internally
 // - **Key routing**: Ctrl+key forwarding, Emacs editing (Ctrl+A/E/F/B/N/P/K/H),
-//   shell history, prefix forwarding (/, @) — all rules are defined in
-//   `TextBoxKeyRouting` as a centralized table. See the rule table above that enum.
+//   shell history, prefix forwarding (/, @), text forwarding (?) — all rules
+//   are defined in `TextBoxKeyRouting` as a centralized table.
+//   See the rule table above that enum.
 // - **Theme sync**: Matches terminal background/foreground colors, font, and
 //   selection colors (inverted fg/bg)
 // - **Toggle**: Cmd+Option+T to toggle display or focus (configurable).
@@ -216,20 +217,23 @@ enum TextBoxFocusState {
 //
 // | # | Modifier | Key              | TextBox | App              | Action                                |
 // |---|----------|------------------|---------|------------------|---------------------------------------|
-// | 1 | Ctrl     | A E F B N P K H  | any     | any              | Emacs editing (handled by NSTextView) |
-// | 2 | Ctrl     | * (other)        | any     | any              | Forward to terminal (keep focus)      |
-// | 3 |          | /                | empty   | claudeCode,codex | Forward prefix + focus terminal       |
-// | 4 |          | @                | empty   | claudeCode       | Forward prefix + focus terminal       |
-// | 5 |          | Return           | any     | any              | Submit or newline (setting)           |
-// | 6 | Shift    | Return           | any     | any              | Newline or submit (inverse of 5)      |
-// | 7 |          | Escape           | any     | any              | Focus terminal or send ESC (setting)  |
-// | 8 |          | ↑ ↓ ← → Tab BS   | empty   | any              | Forward key to terminal (keep focus)  |
-// | 9 | *        | *                | any     | any              | TextBox text input (fallback)         |
+// | 1  | Ctrl     | A E F B N P K H  | any     | any              | Emacs editing (handled by NSTextView) |
+// | 2  | Ctrl     | * (other)        | any     | any              | Forward to terminal (keep focus)      |
+// | 3  |          | /                | empty   | claudeCode,codex | Forward prefix + focus terminal       |
+// | 4  |          | @                | empty   | claudeCode       | Forward prefix + focus terminal       |
+// | 5  |          | ?                | empty   | claudeCode,codex | Forward text to terminal (keep focus) |
+// | 6  |          | Return           | any     | any              | Submit or newline (setting)           |
+// | 7  | Shift    | Return           | any     | any              | Newline or submit (inverse of 6)      |
+// | 8  |          | Escape           | any     | any              | Focus terminal or send ESC (setting)  |
+// | 9  |          | ↑ ↓ ← → Tab BS   | empty   | any              | Forward key to terminal (keep focus)  |
+// | 10 | *        | *                | any     | any              | TextBox text input (fallback)         |
 
 /// Normalized input from the three NSTextView interception points.
 enum TextBoxKeyInput {
     /// From keyDown(): Ctrl + character key.
     case ctrl(String)
+    /// From keyDown(): unmodified character key (no Ctrl/Cmd/Option).
+    case key(String)
     /// From insertText(): committed text character.
     case text(String)
     /// From doCommand(): AppKit-interpreted command selector.
@@ -244,13 +248,15 @@ enum TextBoxKeyAction {
     case forwardControl
     /// Rule 3/4: Forward prefix character to terminal and move focus.
     case forwardPrefix(String)
-    /// Rule 5/6: Send TextBox content to terminal.
+    /// Rule 5: Forward raw key event to terminal (keep focus).
+    case forwardKeyEvent
+    /// Rule 6/7: Send TextBox content to terminal.
     case submit
-    /// Rule 5/6: Insert newline into TextBox.
+    /// Rule 6/7: Insert newline into TextBox.
     case insertNewline
-    /// Rule 7: Escape action (setting-dependent).
+    /// Rule 8: Escape action (setting-dependent).
     case escape
-    /// Rule 8: Forward interpreted key to terminal (keep focus).
+    /// Rule 9: Forward interpreted key to terminal (keep focus).
     case forwardKey(TextBoxKeyRouting.TerminalKey)
     /// Fallback: Default TextBox text input.
     case textInput
@@ -309,11 +315,16 @@ enum TextBoxKeyRouting {
         "h",  // deleteBackward:
     ]
 
-    /// Rules 5, 6: Prefixes forwarded to terminal when TextBox is empty.
-    /// Per-app prefix sets are defined in `TextBoxAppDetection`.
+    /// Rules 3, 4: Prefixes forwarded to terminal when TextBox is empty (+ focus terminal).
     private static let prefixForwardKeys: [TextBoxAppDetection: [String]] = [
         .claudeCode: ["/", "@"],
         .codex:      ["/"],
+    ]
+
+    /// Rule 5: Text forwarded to terminal when TextBox is empty (keep focus).
+    private static let textForwardKeys: [TextBoxAppDetection: [String]] = [
+        .claudeCode: ["?"],
+        .codex:      ["?"],
     ]
 
     /// Rule 7: Selectors forwarded to terminal when TextBox is empty.
@@ -342,33 +353,43 @@ enum TextBoxKeyRouting {
             if emacsEditingKeys.contains(char) { return .emacsEdit }      // Rule 1
             return .forwardControl                                        // Rule 2
 
+        // Rule 5: Unmodified key forwarded as raw event (keep focus)
+        case .key(let char):
+            if isEmpty {
+                for (app, keys) in textForwardKeys
+                    where keys.contains(char) && app.matches(terminalTitle: terminalTitle) {
+                    return .forwardKeyEvent                               // Rule 5
+                }
+            }
+            return .textInput                                             // Rule 10 (Fallback)
+
         // Rules 3, 4, fallback: Inserted text
         case .text(let str):
             if isEmpty {
-                for (app, prefixes) in prefixForwardKeys
-                    where prefixes.contains(str) && app.matches(terminalTitle: terminalTitle) {
+                for (app, keys) in prefixForwardKeys
+                    where keys.contains(str) && app.matches(terminalTitle: terminalTitle) {
                     return .forwardPrefix(str)                            // Rule 3, 4
                 }
             }
-            return .textInput                                             // Rule 9 (Fallback)
+            return .textInput                                             // Rule 10 (Fallback)
 
-        // Rules 5, 6, 7, 8: Command selectors
+        // Rules 6, 7, 8, 9: Command selectors
         case .command(let selector, let shifted):
-            // Rule 5, 6: Return
+            // Rule 6, 7: Return
             if selector == #selector(NSResponder.insertNewline(_:)) ||
                selector == #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)) {
                 let shouldSend = enterToSend ? !shifted : shifted
                 return shouldSend ? .submit : .insertNewline
             }
-            // Rule 7: Escape
+            // Rule 8: Escape
             if selector == #selector(NSResponder.cancelOperation(_:)) {
                 return .escape
             }
-            // Rule 8: Empty-state navigation
+            // Rule 9: Empty-state navigation
             if isEmpty, let key = emptyStateSelectors[selector] {
                 return .forwardKey(key)
             }
-            return .textInput                                             // Rule 9 (Fallback)
+            return .textInput                                             // Rule 10 (Fallback)
         }
     }
 }
@@ -878,6 +899,11 @@ final class InputTextView: NSTextView {
     /// Current terminal process title, used for app detection in key routing.
     var terminalTitle: String = ""
 
+    /// Set by keyDown when a key event was already forwarded to the terminal,
+    /// so insertText can skip the duplicate insertion that the input method
+    /// system triggers in parallel.
+    private var keyEventAlreadyForwarded = false
+
     // Shell-escape characters matching terminal drag-and-drop behavior.
     private static let shellEscapeCharacters = "\\ ()[]{}<>\"'`!#$&;|*?\t"
 
@@ -953,6 +979,12 @@ final class InputTextView: NSTextView {
     }
 
     override func insertText(_ string: Any, replacementRange: NSRange) {
+        // If keyDown already forwarded this key event to the terminal,
+        // skip the text insertion that the input method system triggers.
+        if keyEventAlreadyForwarded {
+            keyEventAlreadyForwarded = false
+            return
+        }
         if let str = string as? String {
             let action = TextBoxKeyRouting.route(
                 .text(str), isEmpty: self.string.isEmpty,
@@ -987,6 +1019,21 @@ final class InputTextView: NSTextView {
             }
             return
         }
+
+        // Rule 5: Check for unmodified keys that should be forwarded as raw events.
+        // Use `characters` (not `charactersIgnoringModifiers`) because "?" is
+        // Shift+"/" and we need the actual typed character.
+        if let chars = event.characters {
+            let action = TextBoxKeyRouting.route(
+                .key(chars), isEmpty: string.isEmpty,
+                terminalTitle: terminalTitle, enterToSend: enterToSend)
+            if case .forwardKeyEvent = action {
+                keyEventAlreadyForwarded = true
+                inputCoordinator?.parent.onKeyEvent(.control(event))
+                return
+            }
+        }
+
         super.keyDown(with: event)
     }
 

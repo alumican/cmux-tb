@@ -188,7 +188,41 @@ final class TextBoxKeyRoutingTests: XCTestCase {
         }
     }
 
-    // MARK: Rule 5/6 — Return (setting-dependent)
+    // MARK: Rule 5 — "?" key event forwarding (empty + app detected, keep focus)
+
+    func testQuestionMarkForwardWhenEmptyAndClaudeCodeRunning() {
+        let action = route(.key("?"), isEmpty: true, terminalTitle: "Claude Code")
+        guard case .forwardKeyEvent = action else {
+            XCTFail("Expected .forwardKeyEvent, got \(action)")
+            return
+        }
+    }
+
+    func testQuestionMarkForwardWhenEmptyAndCodexRunning() {
+        let action = route(.key("?"), isEmpty: true, terminalTitle: "Codex")
+        guard case .forwardKeyEvent = action else {
+            XCTFail("Expected .forwardKeyEvent, got \(action)")
+            return
+        }
+    }
+
+    func testQuestionMarkNotForwardedWhenNotEmpty() {
+        let action = route(.key("?"), isEmpty: false, terminalTitle: "Claude Code")
+        guard case .textInput = action else {
+            XCTFail("Expected .textInput, got \(action)")
+            return
+        }
+    }
+
+    func testQuestionMarkNotForwardedWhenNoAppDetected() {
+        let action = route(.key("?"), isEmpty: true, terminalTitle: "zsh")
+        guard case .textInput = action else {
+            XCTFail("Expected .textInput, got \(action)")
+            return
+        }
+    }
+
+    // MARK: Rule 6/7 — Return (setting-dependent)
 
     func testReturnSubmitsWhenEnterToSendAndNotShifted() {
         let action = route(.command(#selector(NSResponder.insertNewline(_:)), shifted: false), enterToSend: true)
@@ -222,7 +256,7 @@ final class TextBoxKeyRoutingTests: XCTestCase {
         }
     }
 
-    // MARK: Rule 7 — Escape
+    // MARK: Rule 8 — Escape
 
     func testEscapeReturnsEscape() {
         let action = route(.command(#selector(NSResponder.cancelOperation(_:)), shifted: false))
@@ -232,7 +266,7 @@ final class TextBoxKeyRoutingTests: XCTestCase {
         }
     }
 
-    // MARK: Rule 8 — Empty-state navigation forwarding
+    // MARK: Rule 9 — Empty-state navigation forwarding
 
     func testArrowUpForwardedWhenEmpty() {
         let action = route(.command(#selector(NSResponder.moveUp(_:)), shifted: false), isEmpty: true)
@@ -274,7 +308,7 @@ final class TextBoxKeyRoutingTests: XCTestCase {
         }
     }
 
-    // MARK: Rule 9 — Fallback (textInput)
+    // MARK: Rule 10 — Fallback (textInput)
 
     func testRegularTextReturnsTextInput() {
         let action = route(.text("a"), isEmpty: false)
