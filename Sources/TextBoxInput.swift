@@ -67,7 +67,7 @@ private enum TextBoxInputViewLayout {
     /// Minimum number of visible lines.
     static let minLines: Int = 2
     /// Maximum number of visible lines before the text view starts scrolling internally.
-    static let maxLines: Int = 6
+    static let maxLines: Int = 8
     /// Added to the terminal font size for the TextBox font (slightly larger for readability).
     static let fontSizeOffset: CGFloat = 1
     /// Extra spacing between lines in multi-line input.
