@@ -168,6 +168,7 @@ struct cmuxApp: App {
     @AppStorage(KeyboardShortcutSettings.Action.renameWorkspace.defaultsKey) private var renameWorkspaceShortcutData = Data()
     @AppStorage(KeyboardShortcutSettings.Action.openFolder.defaultsKey) private var openFolderShortcutData = Data()
     @AppStorage(KeyboardShortcutSettings.Action.closeWorkspace.defaultsKey) private var closeWorkspaceShortcutData = Data()
+    @AppStorage(KeyboardShortcutSettings.Action.toggleTextBoxInput.defaultsKey) private var toggleTextBoxInputShortcutData = Data() // [TextBox]
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     private var browserToolbarAccessorySpacing: Int {
@@ -703,6 +704,11 @@ struct cmuxApp: App {
                     }
                 }
 
+                // [TextBox]
+                splitCommandButton(title: String(localized: "menu.view.toggleTextBoxInput", defaultValue: "Show/Hide TextBox Input"), shortcut: toggleTextBoxInputMenuShortcut) {
+                    activeTabManager.selectedWorkspace?.toggleTextBoxMode(.default)
+                }
+
                 Divider()
 
                 splitCommandButton(title: String(localized: "menu.view.nextSurface", defaultValue: "Next Surface"), shortcut: nextSurfaceMenuShortcut) {
@@ -975,6 +981,14 @@ struct cmuxApp: App {
         decodeShortcut(
             from: closeWorkspaceShortcutData,
             fallback: KeyboardShortcutSettings.Action.closeWorkspace.defaultShortcut
+        )
+    }
+
+    // [TextBox]
+    private var toggleTextBoxInputMenuShortcut: StoredShortcut {
+        decodeShortcut(
+            from: toggleTextBoxInputShortcutData,
+            fallback: KeyboardShortcutSettings.Action.toggleTextBoxInput.defaultShortcut
         )
     }
 
@@ -3845,6 +3859,19 @@ struct SettingsView: View {
     private var openSidebarPullRequestLinksInCmuxBrowser = BrowserLinkOpenSettings.defaultOpenSidebarPullRequestLinksInCmuxBrowser
     @AppStorage(ShortcutHintDebugSettings.showHintsOnCommandHoldKey)
     private var showShortcutHintsOnCommandHold = ShortcutHintDebugSettings.defaultShowHintsOnCommandHold
+
+    // [TextBox]
+    @AppStorage(TextBoxInputSettings.enabledKey) private var textBoxInputEnabled = TextBoxInputSettings.defaultEnabled
+    @AppStorage(TextBoxInputSettings.enterToSendKey) private var textBoxEnterToSend = TextBoxInputSettings.defaultEnterToSend
+    @AppStorage(TextBoxInputSettings.escapeBehaviorKey) private var textBoxEscapeBehavior = TextBoxInputSettings.defaultEscapeBehavior.rawValue
+    @AppStorage(TextBoxInputSettings.shortcutBehaviorKey) private var textBoxShortcutBehavior = TextBoxInputSettings.defaultShortcutBehavior.rawValue
+
+    // [TextBox] Settings title with current shortcut key
+    private var textBoxShortcutBehaviorTitle: String {
+        let key = KeyboardShortcutSettings.toggleTextBoxInputShortcut().displayString
+        return String(localized: "settings.textBoxInput.shortcutBehavior", defaultValue: "Keyboard Shortcut (\(key))")
+    }
+
     @AppStorage("sidebarShowSSH") private var sidebarShowSSH = true
     @AppStorage("sidebarShowPorts") private var sidebarShowPorts = true
     @AppStorage("sidebarShowLog") private var sidebarShowLog = true
@@ -5045,6 +5072,60 @@ struct SettingsView: View {
                         SettingsCardNote(String(localized: "settings.automation.port.note", defaultValue: "Each workspace gets CMUX_PORT and CMUX_PORT_END env vars with a dedicated port range. New terminals inherit these values."))
                     }
 
+                    // [TextBox]
+                    SettingsSectionHeader(title: String(localized: "settings.section.textBoxInput", defaultValue: "TextBox Input"))
+                    SettingsCard {
+                        SettingsCardRow(
+                            String(localized: "settings.textBoxInput.enableMode", defaultValue: "Enable Mode"),
+                            subtitle: String(localized: "settings.textBoxInput.enableMode.subtitle", defaultValue: "Replace terminal input with a native text box. Supports standard editing, IME, and clipboard shortcuts.")
+                        ) {
+                            Toggle("", isOn: $textBoxInputEnabled)
+                                .labelsHidden()
+                                .controlSize(.small)
+                        }
+
+                        SettingsCardDivider()
+
+                        SettingsCardRow(
+                            String(localized: "settings.textBoxInput.sendOnReturn", defaultValue: "Send on Return"),
+                            subtitle: String(localized: "settings.textBoxInput.sendOnReturn.subtitle", defaultValue: "Insert new line with Shift+Return")
+                        ) {
+                            Toggle("", isOn: $textBoxEnterToSend)
+                                .labelsHidden()
+                                .controlSize(.small)
+                        }
+                        .textBoxSettingsDisabled(!textBoxInputEnabled)
+
+                        SettingsCardDivider()
+
+                        SettingsPickerRow(
+                            String(localized: "settings.textBoxInput.escapeBehavior", defaultValue: "Escape Key"),
+                            subtitle: String(localized: "settings.textBoxInput.escapeBehavior.subtitle", defaultValue: "Action when pressing Escape in the TextBox."),
+                            controlWidth: pickerColumnWidth,
+                            selection: $textBoxEscapeBehavior
+                        ) {
+                            ForEach(TextBoxEscapeBehavior.allCases) { behavior in
+                                Text(behavior.displayName).tag(behavior.rawValue)
+                            }
+                        }
+                        .textBoxSettingsDisabled(!textBoxInputEnabled)
+
+                        SettingsCardDivider()
+
+                        // [TextBox] Shortcut behavior setting
+                        SettingsPickerRow(
+                            textBoxShortcutBehaviorTitle,
+                            subtitle: String(localized: "settings.textBoxInput.shortcutBehavior.subtitle", defaultValue: "Shortcut key can be changed in Keyboard Shortcuts settings."),
+                            controlWidth: pickerColumnWidth,
+                            selection: $textBoxShortcutBehavior
+                        ) {
+                            ForEach(TextBoxShortcutBehavior.allCases) { behavior in
+                                Text(behavior.displayName).tag(behavior.rawValue)
+                            }
+                        }
+                        .textBoxSettingsDisabled(!textBoxInputEnabled)
+                    }
+
                     SettingsSectionHeader(title: String(localized: "settings.section.browser", defaultValue: "Browser"))
                         .id(SettingsNavigationTarget.browser)
                         .accessibilityIdentifier("SettingsBrowserSection")
@@ -5605,6 +5686,7 @@ struct SettingsView: View {
         socketPasswordStatusIsError = false
         refreshDetectedImportBrowsers()
         KeyboardShortcutSettings.resetAll()
+        TextBoxInputSettings.resetAll() // [TextBox]
         WorkspaceTabColorSettings.reset()
         reloadWorkspaceTabColorSettings()
         shortcutResetToken = UUID()

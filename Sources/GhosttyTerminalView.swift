@@ -899,6 +899,11 @@ class GhosttyApp {
     private(set) var config: ghostty_config_t?
     private(set) var defaultBackgroundColor: NSColor = .windowBackgroundColor
     private(set) var defaultBackgroundOpacity: Double = 1.0
+
+    // [TextBox] Default foreground color resolved from Ghostty runtime config,
+    // used to keep TextBox text color consistent with the terminal.
+    private(set) var defaultForegroundColor: NSColor = .textColor
+
     private static func resolveBackgroundLogURL(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> URL {
@@ -1814,6 +1819,18 @@ class GhosttyApp {
                 red: CGFloat(color.r) / 255,
                 green: CGFloat(color.g) / 255,
                 blue: CGFloat(color.b) / 255,
+                alpha: 1.0
+            )
+        }
+
+        // [TextBox] Extract foreground color so TextBox text matches the terminal
+        var fgColor = ghostty_config_color_s()
+        let fgKey = "foreground"
+        if ghostty_config_get(config, &fgColor, fgKey, UInt(fgKey.lengthOfBytes(using: .utf8))) {
+            defaultForegroundColor = NSColor(
+                red: CGFloat(fgColor.r) / 255,
+                green: CGFloat(fgColor.g) / 255,
+                blue: CGFloat(fgColor.b) / 255,
                 alpha: 1.0
             )
         }
@@ -3708,6 +3725,12 @@ final class TerminalSurface: Identifiable, ObservableObject {
         return ghostty_surface_needs_confirm_quit(surface)
     }
 
+    /// [TextBox] Move keyboard focus to the terminal's NSView.
+    func focusTerminalView() {
+        guard let view = attachedView, let window = view.window else { return }
+        window.makeFirstResponder(view)
+    }
+
     func sendText(_ text: String) {
         guard let data = text.data(using: .utf8), !data.isEmpty else { return }
         guard let surface = surface else {
@@ -3715,6 +3738,37 @@ final class TerminalSurface: Identifiable, ObservableObject {
             return
         }
         writeTextData(data, to: surface)
+    }
+
+    /// [TextBox] Send a synthetic key event through AppKit, simulating a physical
+    /// key press. Goes through AppKit's full key handling path.
+    func sendSyntheticKey(characters: String, keyCode: UInt16, modifiers: NSEvent.ModifierFlags = []) {
+        guard let view = attachedView, let window = view.window else { return }
+        if let keyDown = NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: modifiers,
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: characters,
+            charactersIgnoringModifiers: characters,
+            isARepeat: false,
+            keyCode: keyCode
+        ) {
+            view.keyDown(with: keyDown)
+        }
+    }
+
+    // [TextBox] Send a named key to the terminal via synthetic NSEvent.
+    func sendKey(_ key: TextBoxKeyRouting.TerminalKey) {
+        sendSyntheticKey(characters: key.characters, keyCode: key.keyCode)
+    }
+
+    /// [TextBox] Forward an NSEvent directly to the terminal view.
+    func forwardKeyEvent(_ event: NSEvent) {
+        guard let view = attachedView else { return }
+        view.keyDown(with: event)
     }
 
     func requestBackgroundSurfaceStartIfNeeded() {
@@ -8299,6 +8353,11 @@ final class GhosttySurfaceScrollView: NSView {
             return
         }
 
+        // [TextBox] Don't steal focus from a TextBox input view.
+        if window.firstResponder is InputTextView {
+            return
+        }
+
         if !window.isKeyWindow {
             guard shouldAllowEnsureFocusWindowActivation(
                 activeTabManager: delegate.tabManager,
@@ -8447,6 +8506,15 @@ final class GhosttySurfaceScrollView: NSView {
 #endif
             return
         }
+
+        // [TextBox] Don't steal focus from a TextBox input view.
+        if window.firstResponder is InputTextView {
+#if DEBUG
+            dlog("focus.apply.skip surface=\(surfaceShort) reason=textBoxFocused")
+#endif
+            return
+        }
+
 #if DEBUG
         dlog("find.applyFirstResponder APPLY surface=\(surfaceShort) prevFirstResponder=\(String(describing: window.firstResponder))")
 #endif
