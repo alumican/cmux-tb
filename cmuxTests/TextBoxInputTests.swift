@@ -160,7 +160,7 @@ final class TextBoxKeyRoutingTests: XCTestCase {
         }
     }
 
-    // MARK: Rule 4 — "@" prefix forwarding (empty + Claude Code only)
+    // MARK: Rule 4 — "@" prefix forwarding (empty + app detected)
 
     func testAtForwardWhenEmptyAndClaudeCodeRunning() {
         let action = route(.text("@"), isEmpty: true, terminalTitle: "Claude Code")
