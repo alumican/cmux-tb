@@ -168,7 +168,6 @@ struct cmuxApp: App {
     @AppStorage(KeyboardShortcutSettings.Action.renameWorkspace.defaultsKey) private var renameWorkspaceShortcutData = Data()
     @AppStorage(KeyboardShortcutSettings.Action.openFolder.defaultsKey) private var openFolderShortcutData = Data()
     @AppStorage(KeyboardShortcutSettings.Action.closeWorkspace.defaultsKey) private var closeWorkspaceShortcutData = Data()
-    @AppStorage(KeyboardShortcutSettings.Action.toggleTextBoxInput.defaultsKey) private var toggleTextBoxInputShortcutData = Data() // [TextBox]
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     private var browserToolbarAccessorySpacing: Int {
@@ -704,11 +703,6 @@ struct cmuxApp: App {
                     }
                 }
 
-                // [TextBox]
-                splitCommandButton(title: String(localized: "menu.view.toggleTextBoxInput", defaultValue: "Show/Hide TextBox Input"), shortcut: toggleTextBoxInputMenuShortcut) {
-                    activeTabManager.selectedWorkspace?.toggleTextBoxMode(.default)
-                }
-
                 Divider()
 
                 splitCommandButton(title: String(localized: "menu.view.nextSurface", defaultValue: "Next Surface"), shortcut: nextSurfaceMenuShortcut) {
@@ -981,14 +975,6 @@ struct cmuxApp: App {
         decodeShortcut(
             from: closeWorkspaceShortcutData,
             fallback: KeyboardShortcutSettings.Action.closeWorkspace.defaultShortcut
-        )
-    }
-
-    // [TextBox]
-    private var toggleTextBoxInputMenuShortcut: StoredShortcut {
-        decodeShortcut(
-            from: toggleTextBoxInputShortcutData,
-            fallback: KeyboardShortcutSettings.Action.toggleTextBoxInput.defaultShortcut
         )
     }
 

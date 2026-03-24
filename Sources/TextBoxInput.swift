@@ -73,7 +73,9 @@ stealing focus when an InputTextView is the current first responder.
 
 ### F12. App Detection
 Detects Claude Code and Codex by matching terminal tab title (regex,
-case-insensitive). Used to enable prefix/key forwarding (Rules 3–5).
+case-insensitive). Claude Code is also detected when the title starts
+with "✱" or "✳" (icon prefix) or "⠂" (thinking indicator).
+Used to enable prefix/key forwarding (Rules 3–5).
 
 ### F13. Bracket Paste Submission
 Text is sent via PTY bracket paste, then Return is sent as a separate
@@ -175,8 +177,7 @@ inputTextView reference. Switching tabs preserves TextBox state.
 - [ ] T9.4  Cmd+Opt+T moves focus to terminal when TextBox focused (toggleFocus mode)
 - [ ] T9.5  Toggle applies to all tabs simultaneously
 - [ ] T9.6  Custom shortcut key works after changing in Settings
-- [ ] T9.7  View menu "Show/Hide TextBox Input" works
-- [ ] T9.8  Enabling "Enable Mode" setting forces TextBox visible
+- [ ] T9.7  Enabling "Enable Mode" setting forces TextBox visible
 
 ### T10. Drag & Drop (F8)
 - [ ] T10.1  Drop single file → shell-escaped path inserted
@@ -195,7 +196,9 @@ inputTextView reference. Switching tabs preserves TextBox state.
 
 ### T12. App Detection (F12)
 - [ ] T12.1  "Claude Code" in title → detected
-- [ ] T12.2  "✱ Claude Code" (with icon) → detected
+- [ ] T12.2  "✱ Claude Code" or "✳ Claude Code" (with icon) → detected
+- [ ] T12.2b Title starting with "✳" (e.g. "✳ Japanese greeting conversation") → detected as Claude Code
+- [ ] T12.2c Title starting with "⠂" (e.g. "⠂ New coding session") → detected as Claude Code
 - [ ] T12.3  "Codex" in title → detected
 - [ ] T12.4  "zsh" or "bash" → not detected
 - [ ] T12.5  Detection is case-insensitive
@@ -208,7 +211,7 @@ inputTextView reference. Switching tabs preserves TextBox state.
 
 ### T14. Per-panel State (F14)
 - [ ] T14.1  Switching tabs preserves TextBox content
-- [ ] T14.2  Each tab can have TextBox shown/hidden independently (toggleDisplay)
+- [ ] T14.2  Toggle applies to all tabs simultaneously (global, not per-tab)
 - [ ] T14.3  New tab inherits global Enable Mode setting
 - [ ] T14.4  Split panes each have their own TextBox
 
@@ -318,10 +321,11 @@ enum TextBoxAppDetection: CaseIterable {
     case codex
 
     /// Regex pattern matched (case-insensitive) against the terminal tab title.
-    /// The title may contain leading icons or symbols (e.g. "✱ Claude Code").
+    /// Claude Code detection: matches "Claude Code" anywhere in the title,
+    /// or a title starting with "✱ " / "✳ " (idle/active icon) or "⠂ " (thinking indicator).
     private var tabTitlePattern: String {
         switch self {
-        case .claudeCode: return "Claude Code"
+        case .claudeCode: return "Claude Code|^[✱✳⠂] "
         case .codex:      return "Codex"
         }
     }
