@@ -138,10 +138,11 @@ enum TextBoxAppDetection: CaseIterable {
     case codex
 
     /// Regex pattern matched (case-insensitive) against the terminal tab title.
-    /// The title may contain leading icons or symbols (e.g. "✱ Claude Code").
+    /// Claude Code detection: matches "Claude Code" anywhere in the title,
+    /// or a title starting with "✱ " / "✳ " (idle/active icon) or "⠂ " (thinking indicator).
     private var tabTitlePattern: String {
         switch self {
-        case .claudeCode: return "Claude Code"
+        case .claudeCode: return "Claude Code|^[✱✳⠂] "
         case .codex:      return "Codex"
         }
     }
