@@ -79,7 +79,7 @@ enum KeyboardShortcutSettings {
             case .openBrowser: return String(localized: "shortcut.openBrowser.label", defaultValue: "Open Browser")
             case .toggleBrowserDeveloperTools: return String(localized: "shortcut.toggleBrowserDevTools.label", defaultValue: "Toggle Browser Developer Tools")
             case .showBrowserJavaScriptConsole: return String(localized: "shortcut.showBrowserJSConsole.label", defaultValue: "Show Browser JavaScript Console")
-            case .toggleTextBoxInput: return String(localized: "shortcut.toggleTextBoxInput.label", defaultValue: "Show/Hide TextBox Input") // [TextBox]
+            case .toggleTextBoxInput: return String(localized: "shortcut.toggleTextBoxInput.label", defaultValue: "Toggle TextBox Input") // [TextBox]
             }
         }
 
@@ -185,6 +185,7 @@ enum KeyboardShortcutSettings {
                 return StoredShortcut(key: "c", command: true, shift: false, option: true, control: false)
 
             // [TextBox]
+            // [cmux-tb] Default: Cmd+Opt+T (upstream cmux PR uses Cmd+Opt+B to avoid conflict with close-other-tabs)
             case .toggleTextBoxInput:
                 return StoredShortcut(key: "t", command: true, shift: false, option: true, control: false)
             }

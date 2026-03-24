@@ -13,18 +13,17 @@ final class TextBoxInputSettingsTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        UserDefaults.standard.removeObject(forKey: TextBoxInputSettings.enabledKey)
-        UserDefaults.standard.removeObject(forKey: TextBoxInputSettings.enterToSendKey)
+        TextBoxInputSettings.resetAll()
     }
 
     override func tearDown() {
-        UserDefaults.standard.removeObject(forKey: TextBoxInputSettings.enabledKey)
-        UserDefaults.standard.removeObject(forKey: TextBoxInputSettings.enterToSendKey)
+        TextBoxInputSettings.resetAll()
         super.tearDown()
     }
 
-    func testDefaultEnabledIsFalse() {
-        XCTAssertFalse(TextBoxInputSettings.isEnabled())
+    // [cmux-tb] Default: true (upstream cmux PR expects false)
+    func testDefaultEnabledIsTrue() {
+        XCTAssertTrue(TextBoxInputSettings.isEnabled())
     }
 
     func testDefaultEnterToSendIsTrue() {
@@ -51,6 +50,7 @@ final class TextBoxShortcutTests: XCTestCase {
         super.tearDown()
     }
 
+    // [cmux-tb] Default: "t" (upstream cmux PR uses "b")
     func testToggleTextBoxInputDefaultShortcut() {
         let shortcut = KeyboardShortcutSettings.Action.toggleTextBoxInput.defaultShortcut
         XCTAssertEqual(shortcut.key, "t")
@@ -69,7 +69,7 @@ final class TextBoxShortcutTests: XCTestCase {
 
     func testToggleTextBoxInputLabel() {
         let label = KeyboardShortcutSettings.Action.toggleTextBoxInput.label
-        XCTAssertEqual(label, "Show/Hide TextBox Input")
+        XCTAssertEqual(label, "Toggle TextBox Input")
     }
 
     func testCustomShortcutPersistence() {
@@ -162,7 +162,7 @@ final class TextBoxKeyRoutingTests: XCTestCase {
         }
     }
 
-    // MARK: Rule 4 — "@" prefix forwarding (empty + Claude Code only)
+    // MARK: Rule 4 — "@" prefix forwarding (empty + app detected)
 
     func testAtForwardWhenEmptyAndClaudeCodeRunning() {
         let action = route(.text("@"), isEmpty: true, terminalTitle: "Claude Code")
@@ -337,6 +337,18 @@ final class TextBoxAppDetectionTests: XCTestCase {
 
     func testClaudeCodeDetectedWithIcon() {
         XCTAssertTrue(TextBoxAppDetection.claudeCode.matches(terminalTitle: "✱ Claude Code"))
+    }
+
+    func testClaudeCodeDetectedWithAltIcon() {
+        XCTAssertTrue(TextBoxAppDetection.claudeCode.matches(terminalTitle: "✳ Claude Code"))
+    }
+
+    func testClaudeCodeDetectedWithThinkingIndicator() {
+        XCTAssertTrue(TextBoxAppDetection.claudeCode.matches(terminalTitle: "⠂ New coding session"))
+    }
+
+    func testClaudeCodeDetectedWithIconAndSessionTitle() {
+        XCTAssertTrue(TextBoxAppDetection.claudeCode.matches(terminalTitle: "✳ Japanese greeting conversation"))
     }
 
     func testCodexDetected() {

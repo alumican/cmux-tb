@@ -34,7 +34,7 @@
 //
 // ## Settings (Settings > TextBox Input)
 //
-// - **Enable Mode**: Toggle TextBox on/off (default: off)
+// - **Enable Mode**: Toggle TextBox on/off (default: on)
 // - **Send on Return**: On = Return sends / Shift+Enter inserts newline,
 //   Off = Enter inserts newline / Shift+Enter sends (default: on)
 // - **Keyboard Shortcut (Cmd+Option+T)**: Toggle Display or Toggle Focus
@@ -397,6 +397,7 @@ enum TextBoxInputSettings {
     static let escapeBehaviorKey = "textBoxEscapeBehavior"
     static let shortcutBehaviorKey = "textBoxShortcutBehavior"
 
+    // [cmux-tb] Default: true (cmux-tb ships with TextBox enabled; upstream cmux PR uses false)
     static let defaultEnabled = true
     static let defaultEnterToSend = true
     static let defaultEscapeBehavior = TextBoxEscapeBehavior.sendEscape
