@@ -52,7 +52,7 @@ Matches terminal background/foreground colors (via Ghostty runtime config),
 font size, background-opacity, and selection colors (inverted fg/bg).
 
 ### F7. Toggle Shortcut
-Cmd+Option+T to toggle display or focus (configurable in Settings).
+Cmd+Option+B to toggle display or focus (configurable in Settings).
 Default behavior: Toggle Focus (keep TextBox visible, swap focus).
 Scope: all tabs toggle simultaneously.
 
@@ -88,11 +88,11 @@ inputTextView reference. Switching tabs preserves TextBox state.
 
 ## Settings (Settings > TextBox Input)
 
-- **Enable Mode**: Toggle TextBox on/off (default: on)
+- **Enable Mode**: Toggle TextBox on/off (default: off)
 - **Send on Return**: On = Return sends / Shift+Enter inserts newline,
   Off = Enter inserts newline / Shift+Enter sends (default: on)
 - **Escape Key**: Send ESC Key or Focus Terminal (default: Send ESC Key)
-- **Keyboard Shortcut (Cmd+Option+T)**: Toggle Display or Toggle Focus
+- **Keyboard Shortcut (Cmd+Option+B)**: Toggle Display or Toggle Focus
   (default: Toggle Focus). Key is customizable in Keyboard Shortcuts settings.
 
 ## Test Plan
@@ -171,10 +171,10 @@ inputTextView reference. Switching tabs preserves TextBox state.
 - [ ] T8.7  Theme changes are reflected immediately
 
 ### T9. Toggle Shortcut (F7)
-- [ ] T9.1  Cmd+Opt+T shows TextBox when hidden (toggleDisplay mode)
-- [ ] T9.2  Cmd+Opt+T hides TextBox when shown (toggleDisplay mode)
-- [ ] T9.3  Cmd+Opt+T moves focus to TextBox when unfocused (toggleFocus mode)
-- [ ] T9.4  Cmd+Opt+T moves focus to terminal when TextBox focused (toggleFocus mode)
+- [ ] T9.1  Cmd+Opt+B shows TextBox when hidden (toggleDisplay mode)
+- [ ] T9.2  Cmd+Opt+B hides TextBox when shown (toggleDisplay mode)
+- [ ] T9.3  Cmd+Opt+B moves focus to TextBox when unfocused (toggleFocus mode)
+- [ ] T9.4  Cmd+Opt+B moves focus to terminal when TextBox focused (toggleFocus mode)
 - [ ] T9.5  Toggle applies to all tabs simultaneously
 - [ ] T9.6  Custom shortcut key works after changing in Settings
 - [ ] T9.7  Enabling "Enable Mode" setting forces TextBox visible
@@ -294,14 +294,14 @@ private enum TextBoxBehavior {
     /// Delay (ms) before sending Return when the TextBox is empty (no paste).
     /// Set to 0 to send Return immediately (default).
     static let emptyReturnKeyDelayMs: Int = 0
-    /// Scope of the Cmd+Opt+T toggle shortcut.
+    /// Scope of the Cmd+Opt+B toggle shortcut.
     /// `.active` = only the focused tab, `.all` = all tabs simultaneously.
     static let toggleScope: TextBoxToggleTarget = .all
 }
 
 // MARK: - Toggle Scope
 
-/// Scope of the TextBox toggle shortcut (Cmd+Opt+T).
+/// Scope of the TextBox toggle shortcut (Cmd+Opt+B).
 enum TextBoxToggleTarget {
     /// Toggle only the currently active (focused or TextBox-focused) panel.
     case active
@@ -342,7 +342,7 @@ enum TextBoxAppDetection: CaseIterable {
 // MARK: - Focus State
 
 /// The three observable states of the TextBox, used to decide what the
-/// toggle shortcut (Cmd+Opt+T) should do.
+/// toggle shortcut (Cmd+Opt+B) should do.
 ///
 /// Transitions on shortcut press:
 ///   hidden           → show TextBox + focus it
@@ -627,7 +627,7 @@ enum TextBoxInputSettings {
     }
 }
 
-/// What the keyboard shortcut (Cmd+Opt+T) does.
+/// What the keyboard shortcut (Cmd+Opt+B) does.
 enum TextBoxShortcutBehavior: String, CaseIterable, Identifiable {
     /// Toggle TextBox visibility (show/hide).
     case toggleDisplay = "toggleDisplay"

@@ -77806,6 +77806,12 @@
             "state": "new",
             "value": "Toggle TextBox Input"
           }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "テキストボックス入力を切り替え"
+          }
         }
       }
     },
@@ -77970,6 +77976,12 @@
           "stringUnit": {
             "state": "new",
             "value": "Toggle TextBox Input"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "テキストボックス入力を切り替え"
           }
         }
       }

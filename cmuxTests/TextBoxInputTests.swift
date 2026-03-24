@@ -13,13 +13,11 @@ final class TextBoxInputSettingsTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        UserDefaults.standard.removeObject(forKey: TextBoxInputSettings.enabledKey)
-        UserDefaults.standard.removeObject(forKey: TextBoxInputSettings.enterToSendKey)
+        TextBoxInputSettings.resetAll()
     }
 
     override func tearDown() {
-        UserDefaults.standard.removeObject(forKey: TextBoxInputSettings.enabledKey)
-        UserDefaults.standard.removeObject(forKey: TextBoxInputSettings.enterToSendKey)
+        TextBoxInputSettings.resetAll()
         super.tearDown()
     }
 
@@ -53,7 +51,7 @@ final class TextBoxShortcutTests: XCTestCase {
 
     func testToggleTextBoxInputDefaultShortcut() {
         let shortcut = KeyboardShortcutSettings.Action.toggleTextBoxInput.defaultShortcut
-        XCTAssertEqual(shortcut.key, "t")
+        XCTAssertEqual(shortcut.key, "b")
         XCTAssertTrue(shortcut.command)
         XCTAssertFalse(shortcut.shift)
         XCTAssertTrue(shortcut.option)
@@ -69,7 +67,7 @@ final class TextBoxShortcutTests: XCTestCase {
 
     func testToggleTextBoxInputLabel() {
         let label = KeyboardShortcutSettings.Action.toggleTextBoxInput.label
-        XCTAssertEqual(label, "Show/Hide TextBox Input")
+        XCTAssertEqual(label, "Toggle TextBox Input")
     }
 
     func testCustomShortcutPersistence() {
