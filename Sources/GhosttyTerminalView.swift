@@ -3847,6 +3847,22 @@ final class TerminalSurface: Identifiable, ObservableObject {
         }
     }
 
+    // [TextBox] Current scrollbar state for scroll position save/restore.
+    var scrollbarOffset: UInt64? {
+        surfaceView.scrollbar?.offset
+    }
+
+    // [TextBox] Whether the terminal viewport is scrolled up from the bottom.
+    var isScrolledUp: Bool {
+        guard let sb = surfaceView.scrollbar else { return false }
+        return (sb.offset + sb.len) < sb.total
+    }
+
+    // [TextBox] Restore scroll position to a previously saved row offset.
+    func scrollToRow(_ row: UInt64) {
+        _ = performBindingAction("scroll_to_row:\(row)")
+    }
+
     @discardableResult
     func toggleKeyboardCopyMode() -> Bool {
         let handled = surfaceView.toggleKeyboardCopyMode()

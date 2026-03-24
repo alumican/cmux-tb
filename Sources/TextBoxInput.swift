@@ -784,6 +784,18 @@ struct TextBoxInputContainer: View {
         .padding(.top, TextBoxLayout.topPadding)
         .padding(.bottom, TextBoxLayout.bottomPadding)
         .background(Color(nsColor: terminalBackgroundColor))
+        // [TextBox] Restore terminal scroll position after TextBox height changes.
+        // When the VStack resizes the terminal, ghostty sends SIGWINCH which causes
+        // TUI apps like Claude Code to re-render and snap to the bottom. We save the
+        // scroll offset before the resize and restore it after a short delay.
+        .onChange(of: clampedHeight) { [clampedHeight] _ in
+            guard clampedHeight > 0 else { return }
+            guard surface.isScrolledUp,
+                  let savedOffset = surface.scrollbarOffset else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                surface.scrollToRow(savedOffset)
+            }
+        }
     }
 
     private func submit() {
