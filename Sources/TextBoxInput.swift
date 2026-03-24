@@ -98,7 +98,7 @@ inputTextView reference. Switching tabs preserves TextBox state.
 ## Test Plan
 
 ### T1. Settings
-- [ ] T1.1  Default values: enabled=true, enterToSend=true, escape=sendEscape, shortcut=toggleFocus
+- [ ] T1.1  Default values: enabled=false, enterToSend=true, escape=sendEscape, shortcut=toggleFocus
 - [ ] T1.2  Toggle each setting and verify it persists across app restart
 - [ ] T1.3  Reset All restores all settings to defaults
 - [ ] T1.4  Settings rows are dimmed/disabled when Enable Mode is off
@@ -580,7 +580,7 @@ enum TextBoxInputSettings {
     static let escapeBehaviorKey = "textBoxEscapeBehavior"
     static let shortcutBehaviorKey = "textBoxShortcutBehavior"
 
-    static let defaultEnabled = true
+    static let defaultEnabled = false
     static let defaultEnterToSend = true
     static let defaultEscapeBehavior = TextBoxEscapeBehavior.sendEscape
     static let defaultShortcutBehavior = TextBoxShortcutBehavior.toggleFocus
