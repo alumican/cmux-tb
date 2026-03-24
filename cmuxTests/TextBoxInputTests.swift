@@ -339,6 +339,18 @@ final class TextBoxAppDetectionTests: XCTestCase {
         XCTAssertTrue(TextBoxAppDetection.claudeCode.matches(terminalTitle: "✱ Claude Code"))
     }
 
+    func testClaudeCodeDetectedWithAltIcon() {
+        XCTAssertTrue(TextBoxAppDetection.claudeCode.matches(terminalTitle: "✳ Claude Code"))
+    }
+
+    func testClaudeCodeDetectedWithThinkingIndicator() {
+        XCTAssertTrue(TextBoxAppDetection.claudeCode.matches(terminalTitle: "⠂ New coding session"))
+    }
+
+    func testClaudeCodeDetectedWithIconAndSessionTitle() {
+        XCTAssertTrue(TextBoxAppDetection.claudeCode.matches(terminalTitle: "✳ Japanese greeting conversation"))
+    }
+
     func testCodexDetected() {
         XCTAssertTrue(TextBoxAppDetection.codex.matches(terminalTitle: "Codex"))
     }
