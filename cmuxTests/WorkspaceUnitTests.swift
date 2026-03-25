@@ -294,6 +294,34 @@ final class WorkspacePlacementSettingsTests: XCTestCase {
 
 @MainActor
 final class WorkspaceCreationPlacementTests: XCTestCase {
+    private final class SnapshotMutatingTabManager: TabManager {
+        var afterCaptureWorkspaceCreationSnapshot: (() -> Void)?
+        var beforeCreateWorkspace: (() -> Void)?
+
+        override func didCaptureWorkspaceCreationSnapshot() {
+            afterCaptureWorkspaceCreationSnapshot?()
+        }
+
+        override func makeWorkspaceForCreation(
+            title: String,
+            workingDirectory: String?,
+            portOrdinal: Int,
+            configTemplate: ghostty_surface_config_s?,
+            initialTerminalCommand: String?,
+            initialTerminalEnvironment: [String: String]
+        ) -> Workspace {
+            beforeCreateWorkspace?()
+            return super.makeWorkspaceForCreation(
+                title: title,
+                workingDirectory: workingDirectory,
+                portOrdinal: portOrdinal,
+                configTemplate: configTemplate,
+                initialTerminalCommand: initialTerminalCommand,
+                initialTerminalEnvironment: initialTerminalEnvironment
+            )
+        }
+    }
+
     func testAddWorkspaceDefaultPlacementMatchesCurrentSetting() {
         let currentPlacement = WorkspacePlacementSettings.current()
 
@@ -332,6 +360,92 @@ final class WorkspaceCreationPlacementTests: XCTestCase {
         }
 
         XCTAssertEqual(insertedIndex, baselineCount)
+    }
+
+    func testAddWorkspaceAfterCurrentOverrideAppendsAfterLastSelectedWorkspace() {
+        let manager = TabManager()
+        guard !manager.tabs.isEmpty else {
+            XCTFail("Expected TabManager to initialise with at least one workspace")
+            return
+        }
+        _ = manager.addWorkspace()
+        _ = manager.addWorkspace()
+        let fourth = manager.addWorkspace()
+        let baselineOrder = manager.tabs.map(\.id)
+
+        manager.selectWorkspace(fourth)
+        let inserted = manager.addWorkspace(placementOverride: .afterCurrent)
+
+        XCTAssertEqual(manager.tabs.map(\.id).filter { $0 != inserted.id }, baselineOrder)
+        XCTAssertEqual(manager.tabs.last?.id, inserted.id)
+    }
+
+    func testAddWorkspaceAfterCurrentUsesPrecreationSnapshotWhenSelectionMutatesDuringBootstrap() {
+        let manager = SnapshotMutatingTabManager()
+        guard let first = manager.tabs.first else {
+            XCTFail("Expected initial workspace")
+            return
+        }
+
+        manager.setPinned(first, pinned: true)
+        let second = manager.addWorkspace()
+        let third = manager.addWorkspace()
+        manager.selectWorkspace(third)
+
+        let baselineOrder = manager.tabs.map(\.id)
+        manager.beforeCreateWorkspace = {
+            manager.selectWorkspace(first)
+        }
+
+        let inserted = manager.addWorkspace(placementOverride: .afterCurrent)
+
+        XCTAssertEqual(manager.tabs.map(\.id).filter { $0 != inserted.id }, baselineOrder)
+        XCTAssertEqual(manager.tabs.map(\.id), [first.id, second.id, third.id, inserted.id])
+        XCTAssertEqual(manager.selectedTabId, inserted.id)
+    }
+
+    func testAddWorkspaceAfterCurrentDoesNotReinsertClosedWorkspaceCapturedInSnapshot() {
+        let manager = SnapshotMutatingTabManager()
+        guard let first = manager.tabs.first else {
+            XCTFail("Expected initial workspace")
+            return
+        }
+
+        let second = manager.addWorkspace()
+        let third = manager.addWorkspace()
+        manager.selectWorkspace(third)
+
+        manager.afterCaptureWorkspaceCreationSnapshot = {
+            manager.closeWorkspace(second)
+        }
+
+        let inserted = manager.addWorkspace(placementOverride: .afterCurrent)
+
+        XCTAssertEqual(manager.tabs.map(\.id), [first.id, third.id, inserted.id])
+        XCTAssertFalse(manager.tabs.contains(where: { $0.id == second.id }))
+        XCTAssertEqual(manager.selectedTabId, inserted.id)
+    }
+
+    func testAddWorkspaceSurvivesSelectedWorkspaceClosingAfterSnapshot() {
+        let manager = SnapshotMutatingTabManager()
+        guard let first = manager.tabs.first else {
+            XCTFail("Expected initial workspace")
+            return
+        }
+
+        let second = manager.addWorkspace()
+        let third = manager.addWorkspace()
+        manager.selectWorkspace(third)
+
+        manager.afterCaptureWorkspaceCreationSnapshot = {
+            manager.closeWorkspace(third)
+        }
+
+        let inserted = manager.addWorkspace(placementOverride: .afterCurrent)
+
+        XCTAssertEqual(manager.tabs.map(\.id), [first.id, second.id, inserted.id])
+        XCTAssertFalse(manager.tabs.contains(where: { $0.id == third.id }))
+        XCTAssertEqual(manager.selectedTabId, inserted.id)
     }
 
     private func makeManagerWithThreeWorkspaces() -> TabManager {
