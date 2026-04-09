@@ -169,3 +169,201 @@ Requires `brew install create-dmg` and npm `create-dmg` for the background image
 - Always create releases as **draft** first, then publish after CI attaches the DMG. This prevents the README download link from 404-ing during the build.
 - Release notes should link to the upstream cmux version: `[cmux vX.Y.Z](https://github.com/manaflow-ai/cmux/releases/tag/vX.Y.Z)`.
 - The `tb` number is global and continues incrementing across upstream version bumps (e.g. tb12 on 0.62.2 → tb13 on 0.63.2).
+
+## Troubleshooting: past CI failures
+
+### `error: zig is required to build the Ghostty CLI helper`
+
+GitHub Actions の macOS ランナーには Zig がプリインストールされていない。`Install Zig` ステップが必要。
+
+### `cmux-tb.app: No such file or directory` (Codesign 失敗)
+
+Release ビルドの `PRODUCT_NAME` は `cmux`（`cmux-tb` ではない）。ビルド成果物は `build/Build/Products/Release/cmux.app` になる。ワークフロー内のすべてのパスを `cmux.app` に統一すること。
+
+### `create-dmg` の出力 DMG 名
+
+`create-dmg` はアプリ名ベースで DMG を生成する（`cmux *.dmg`）。`mv ./cmux*.dmg "$DMG_RELEASE"` で `cmux-tb-macos.dmg` にリネームする。`cmux-tb*.dmg` の glob ではマッチしないので注意。
+
+## Reference: release-tb.yml (v0.63.2-tb13 時点)
+
+```yaml
+name: Release cmux-tb
+
+on:
+  push:
+    tags:
+      - "v*-tb*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-sign-notarize:
+    runs-on: macos-26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          if [ -d "/Applications/Xcode.app/Contents/Developer" ]; then
+            XCODE_DIR="/Applications/Xcode.app/Contents/Developer"
+          else
+            XCODE_APP="$(ls -d /Applications/Xcode*.app 2>/dev/null | head -n 1 || true)"
+            if [ -n "$XCODE_APP" ]; then
+              XCODE_DIR="$XCODE_APP/Contents/Developer"
+            else
+              echo "No Xcode.app found under /Applications" >&2
+              exit 1
+            fi
+          fi
+          echo "DEVELOPER_DIR=$XCODE_DIR" >> "$GITHUB_ENV"
+          export DEVELOPER_DIR="$XCODE_DIR"
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-path
+
+      - name: Download pre-built GhosttyKit.xcframework
+        run: |
+          ./scripts/download-prebuilt-ghosttykit.sh
+
+      - name: Cache Swift packages
+        uses: actions/cache@v4
+        with:
+          path: .spm-cache
+          key: spm-${{ hashFiles('GhosttyTabs.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: spm-
+
+      - name: Install Zig
+        run: |
+          ZIG_REQUIRED="0.15.2"
+          if command -v zig >/dev/null 2>&1 && zig version 2>/dev/null | grep -q "^${ZIG_REQUIRED}"; then
+            echo "zig ${ZIG_REQUIRED} already installed"
+          else
+            echo "Installing zig ${ZIG_REQUIRED} from tarball"
+            curl -fSL "https://ziglang.org/download/${ZIG_REQUIRED}/zig-aarch64-macos-${ZIG_REQUIRED}.tar.xz" -o /tmp/zig.tar.xz
+            tar xf /tmp/zig.tar.xz -C /tmp
+            sudo mkdir -p /usr/local/bin /usr/local/lib
+            sudo cp -f /tmp/zig-aarch64-macos-${ZIG_REQUIRED}/zig /usr/local/bin/zig
+            sudo cp -rf /tmp/zig-aarch64-macos-${ZIG_REQUIRED}/lib /usr/local/lib/zig
+            export PATH="/usr/local/bin:$PATH"
+            zig version
+          fi
+
+      - name: Build app (Release)
+        run: |
+          export PATH="/usr/local/bin:$PATH"
+          xcodebuild -scheme cmux -configuration Release -derivedDataPath build \
+            -clonedSourcePackagesDirPath .spm-cache \
+            CODE_SIGNING_ALLOWED=NO build
+
+      - name: Verify Sparkle keys in Info.plist
+        run: |
+          APP_PLIST="build/Build/Products/Release/cmux.app/Contents/Info.plist"
+          PLIST_KEY=$(/usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" "$APP_PLIST" 2>/dev/null || echo "")
+          PLIST_FEED=$(/usr/libexec/PlistBuddy -c "Print :SUFeedURL" "$APP_PLIST" 2>/dev/null || echo "")
+          echo "SUPublicEDKey: $PLIST_KEY"
+          echo "SUFeedURL: $PLIST_FEED"
+          if [ -z "$PLIST_KEY" ]; then
+            echo "ERROR: SUPublicEDKey missing from Info.plist" >&2
+            exit 1
+          fi
+
+      - name: Import signing cert
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          if [ -z "$APPLE_CERTIFICATE_BASE64" ]; then
+            echo "Missing APPLE_CERTIFICATE_BASE64 secret" >&2
+            exit 1
+          fi
+          if [ -z "$APPLE_CERTIFICATE_PASSWORD" ]; then
+            echo "Missing APPLE_CERTIFICATE_PASSWORD secret" >&2
+            exit 1
+          fi
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          echo "$APPLE_CERTIFICATE_BASE64" | base64 --decode > /tmp/cert.p12
+          security delete-keychain build.keychain >/dev/null 2>&1 || true
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -lut 21600 build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security import /tmp/cert.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          security list-keychains -d user -s build.keychain
+
+      - name: Codesign app
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          if [ -z "$APPLE_SIGNING_IDENTITY" ]; then
+            echo "Missing APPLE_SIGNING_IDENTITY secret" >&2
+            exit 1
+          fi
+          APP_PATH="build/Build/Products/Release/cmux.app"
+          ENTITLEMENTS="cmux.entitlements"
+          for CLI_BIN in "$APP_PATH"/Contents/Resources/bin/*; do
+            [ -f "$CLI_BIN" ] || continue
+            /usr/bin/codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" --entitlements "$ENTITLEMENTS" "$CLI_BIN"
+          done
+          /usr/bin/codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" --entitlements "$ENTITLEMENTS" --deep "$APP_PATH"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
+      - name: Notarize app
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          if [ -z "$APPLE_ID" ] || [ -z "$APPLE_APP_SPECIFIC_PASSWORD" ] || [ -z "$APPLE_TEAM_ID" ]; then
+            echo "Missing notarization secrets" >&2
+            exit 1
+          fi
+          APP_PATH="build/Build/Products/Release/cmux.app"
+          ZIP_SUBMIT="cmux-tb-notary.zip"
+          DMG_RELEASE="cmux-tb-macos.dmg"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ZIP_SUBMIT"
+          APP_SUBMIT_JSON="$(xcrun notarytool submit "$ZIP_SUBMIT" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --wait --output-format json)"
+          APP_STATUS="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])' <<<"$APP_SUBMIT_JSON")"
+          if [ "$APP_STATUS" != "Accepted" ]; then
+            echo "App notarization failed: $APP_STATUS" >&2
+            exit 1
+          fi
+          xcrun stapler staple "$APP_PATH"
+          spctl -a -vv --type execute "$APP_PATH"
+          rm -f "$ZIP_SUBMIT"
+          npm install --global create-dmg@8.0.0
+          create-dmg --identity="$APPLE_SIGNING_IDENTITY" "$APP_PATH" ./
+          mv ./cmux*.dmg "$DMG_RELEASE"
+          DMG_SUBMIT_JSON="$(xcrun notarytool submit "$DMG_RELEASE" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --wait --output-format json)"
+          DMG_STATUS="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])' <<<"$DMG_SUBMIT_JSON")"
+          if [ "$DMG_STATUS" != "Accepted" ]; then
+            echo "DMG notarization failed: $DMG_STATUS" >&2
+            exit 1
+          fi
+          xcrun stapler staple "$DMG_RELEASE"
+
+      - name: Generate appcast.xml
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          ./scripts/sparkle_generate_appcast.sh cmux-tb-macos.dmg "$TAG" appcast.xml
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            cmux-tb-macos.dmg
+            appcast.xml
+
+      - name: Cleanup keychain
+        if: always()
+        run: |
+          security delete-keychain build.keychain >/dev/null 2>&1 || true
+          rm -f /tmp/cert.p12
+```
