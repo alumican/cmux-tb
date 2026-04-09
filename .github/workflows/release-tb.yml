@@ -74,7 +74,7 @@ jobs:
       # [TextBox] Verify Sparkle public key is baked into the built app
       - name: Verify Sparkle keys in Info.plist
         run: |
-          APP_PLIST="build/Build/Products/Release/cmux-tb.app/Contents/Info.plist"
+          APP_PLIST="build/Build/Products/Release/cmux.app/Contents/Info.plist"
           PLIST_KEY=$(/usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" "$APP_PLIST" 2>/dev/null || echo "")
           PLIST_FEED=$(/usr/libexec/PlistBuddy -c "Print :SUFeedURL" "$APP_PLIST" 2>/dev/null || echo "")
           echo "SUPublicEDKey: $PLIST_KEY"
@@ -115,7 +115,7 @@ jobs:
             echo "Missing APPLE_SIGNING_IDENTITY secret" >&2
             exit 1
           fi
-          APP_PATH="build/Build/Products/Release/cmux-tb.app"
+          APP_PATH="build/Build/Products/Release/cmux.app"
           ENTITLEMENTS="cmux.entitlements"
           # Sign all binaries in the Resources/bin directory
           for CLI_BIN in "$APP_PATH"/Contents/Resources/bin/*; do
@@ -136,7 +136,7 @@ jobs:
             echo "Missing notarization secrets (APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID)" >&2
             exit 1
           fi
-          APP_PATH="build/Build/Products/Release/cmux-tb.app"
+          APP_PATH="build/Build/Products/Release/cmux.app"
           ZIP_SUBMIT="cmux-tb-notary.zip"
           DMG_RELEASE="cmux-tb-macos.dmg"
           ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ZIP_SUBMIT"
@@ -158,7 +158,7 @@ jobs:
             --identity="$APPLE_SIGNING_IDENTITY" \
             "$APP_PATH" \
             ./
-          mv ./cmux-tb*.dmg "$DMG_RELEASE"
+          mv ./cmux*.dmg "$DMG_RELEASE"
           DMG_SUBMIT_JSON="$(xcrun notarytool submit "$DMG_RELEASE" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --wait --output-format json)"
           DMG_SUBMIT_ID="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$DMG_SUBMIT_JSON")"
           DMG_STATUS="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])' <<<"$DMG_SUBMIT_JSON")"
