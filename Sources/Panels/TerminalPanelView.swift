@@ -1,12 +1,14 @@
 import SwiftUI
 import Foundation
 import AppKit
+import Bonsplit
 
 /// View for rendering a terminal panel
 struct TerminalPanelView: View {
     @ObservedObject var panel: TerminalPanel
     @AppStorage(NotificationPaneRingSettings.enabledKey)
     private var notificationPaneRingEnabled = NotificationPaneRingSettings.defaultEnabled
+    let paneId: PaneID
     let isFocused: Bool
     let isVisibleInUI: Bool
     let portalPriority: Int
@@ -45,6 +47,7 @@ struct TerminalPanelView: View {
         VStack(spacing: 0) {
             GhosttyTerminalView(
                 terminalSurface: panel.surface,
+                paneId: paneId,
                 isActive: isFocused,
                 isVisibleInUI: isVisibleInUI,
                 portalZPriority: portalPriority,
@@ -76,7 +79,7 @@ struct TerminalPanelView: View {
                 )
             }
         }
-        
+
         // [TextBox] Force-show TextBox when the setting is toggled on, even if the
         // user previously hid it via Cmd+Opt+T. "Enabled = always visible" is the
         // expected behavior so the setting toggle feels deterministic.

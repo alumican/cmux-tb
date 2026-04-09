@@ -1,50 +1,233 @@
-// TextBoxInput.swift
-//
-// # TextBox Input Mode
-//
-// Provides a native text editing experience for terminal input that
-// terminal emulators typically struggle with.
-//
-// ## Rationale
-//
-// ghostty (libghostty)'s key input path has limitations with IME,
-// macOS standard keybindings, and system clipboard operations. TextBox
-// handles these natively via AppKit and sends only committed text to the
-// terminal. Shell history, tab completion, and Ctrl+key commands are
-// transparently forwarded while keeping focus in the TextBox, so users
-// get a seamless experience without being aware of two input modes.
-//
-// ## Features
-//
-// - **Native text editing**: Full macOS standard operations including
-//   Cmd+A/C/V/X/Z, Option+Arrow word navigation, mouse selection
-// - **Drag & drop**: Drop files/folders from Finder to insert shell-escaped paths
-// - **IME support**: Input methods (e.g. Japanese) work correctly
-// - **Multi-line input**: Insert newlines for multi-line text submission.
-//   Enter=send / Shift+Enter=newline by default (reversible in settings)
-// - **Auto-grow**: Text box grows with content (1–8 lines), then scrolls internally
-// - **Key routing**: Ctrl+key forwarding, Emacs editing (Ctrl+A/E/F/B/N/P/K/H),
-//   shell history, prefix forwarding (/, @), key forwarding (?) — all rules
-//   are defined in `TextBoxKeyRouting` as a centralized table.
-//   See the rule table above that enum.
-// - **Theme sync**: Matches terminal background/foreground colors, font, and
-//   selection colors (inverted fg/bg)
-// - **Toggle**: Cmd+Option+T to toggle display or focus (configurable).
-//   Default is Toggle Focus (keep TextBox visible, swap focus)
-//
-// ## Settings (Settings > TextBox Input)
-//
-// - **Enable Mode**: Toggle TextBox on/off (default: on)
-// - **Send on Return**: On = Return sends / Shift+Enter inserts newline,
-//   Off = Enter inserts newline / Shift+Enter sends (default: on)
-// - **Keyboard Shortcut (Cmd+Option+T)**: Toggle Display or Toggle Focus
-//   (default: Toggle Focus)
-// - **Escape Behavior**: Focus Terminal or Send Escape (default: Send Escape)
-//
-// ## Upstream impact
-//
-// Code added to upstream (manaflow-ai/cmux) files is marked with `[TextBox]`.
-// Run `grep -r '\[TextBox\]' Sources/` to list all locations.
+/*
+TextBoxInput.swift
+
+# TextBox Input Mode
+
+Provides a native text editing experience for terminal input that
+terminal emulators typically struggle with.
+
+## Rationale
+
+ghostty (libghostty)'s key input path has limitations with IME,
+macOS standard keybindings, and system clipboard operations. TextBox
+handles these natively via AppKit and sends only committed text to the
+terminal. Shell history, tab completion, and Ctrl+key commands are
+transparently forwarded while keeping focus in the TextBox, so users
+get a seamless experience without being aware of two input modes.
+
+## Features
+
+### F1. Native Text Editing
+Full macOS standard operations: Cmd+A (select all), Cmd+C/V/X (copy/paste/cut),
+Cmd+Z/Shift+Cmd+Z (undo/redo), Option+Arrow (word navigation), mouse selection,
+double-click word select, triple-click line select.
+
+### F2. IME Support
+Input methods (Japanese, Chinese, Korean, etc.) work correctly via NSTextView's
+built-in marked text handling. Composition is not interrupted by terminal updates.
+
+### F3. Multi-line Input
+Insert newlines for multi-line text submission.
+Default: Enter = send, Shift+Enter = newline (reversible in settings).
+
+### F4. Auto-grow
+Text box grows with content (1–8 visible lines), then scrolls internally.
+Shrinks back to minimum after submit.
+
+### F5. Key Routing
+All rules are defined in `TextBoxKeyRouting` as a centralized table.
+See the rule table above that enum for the full specification.
+- Rule 1: Emacs editing (Ctrl+A/E/F/B/N/P/K/H) — handled by NSTextView
+- Rule 2: Ctrl+other — forwarded to terminal (keep focus)
+- Rule 3: "/" prefix — forwarded to terminal + focus terminal (empty, Claude Code/Codex)
+- Rule 4: "@" prefix — forwarded to terminal + focus terminal (empty, Claude Code/Codex)
+- Rule 5: "?" key — forwarded as raw event (empty, Claude Code/Codex, keep focus)
+- Rule 6/7: Return/Shift+Return — submit or newline (setting-dependent)
+- Rule 8: Escape — focus terminal or send ESC (setting-dependent)
+- Rule 9: ↑ ↓ ← → Tab Backspace — forwarded to terminal when empty (keep focus)
+- Rule 10: Fallback — default TextBox text input
+
+### F6. Theme Sync
+Matches terminal background/foreground colors (via Ghostty runtime config),
+font size, background-opacity, and selection colors (inverted fg/bg).
+
+### F7. Toggle Shortcut
+Cmd+Option+B to toggle display or focus (configurable in Settings).
+Default behavior: Toggle Focus (keep TextBox visible, swap focus).
+Scope: all tabs toggle simultaneously.
+
+### F8. Drag & Drop
+Drop files/folders from Finder onto the TextBox to insert shell-escaped paths.
+Multiple files are space-separated. Dropped text is selected for easy review.
+
+### F9. Placeholder
+Shows dynamic hint text when empty ("Commands or prompts here…")
+with the current send key (Return or Shift+Return) based on settings.
+
+### F10. Send Button
+Paperplane icon button with hover/press highlight. Submits TextBox content.
+
+### F11. Focus Guards
+Terminal focus-restore mechanisms (ensureFocus, applyFirstResponder) skip
+stealing focus when an InputTextView is the current first responder.
+
+### F12. App Detection
+Detects Claude Code and Codex by matching terminal tab title (regex,
+case-insensitive). Claude Code is also detected when the title starts
+with "✱" or "✳" (icon prefix) or "⠂" (thinking indicator).
+Used to enable prefix/key forwarding (Rules 3–5).
+
+### F13. Bracket Paste Submission
+Text is sent via PTY bracket paste, then Return is sent as a separate
+synthetic key event after a 200ms delay. This ensures apps using bracket
+paste mode (zsh, Claude CLI) process the paste before receiving Return.
+
+### F14. Per-panel State
+Each TerminalPanel has independent isTextBoxActive, textBoxContent, and
+inputTextView reference. Switching tabs preserves TextBox state.
+
+## Settings (Settings > TextBox Input)
+
+- **Enable Mode**: Toggle TextBox on/off (default: off)
+- **Send on Return**: On = Return sends / Shift+Enter inserts newline,
+  Off = Enter inserts newline / Shift+Enter sends (default: on)
+- **Escape Key**: Send ESC Key or Focus Terminal (default: Send ESC Key)
+- **Keyboard Shortcut (Cmd+Option+B)**: Toggle Display or Toggle Focus
+  (default: Toggle Focus). Key is customizable in Keyboard Shortcuts settings.
+
+## Test Plan
+
+### T1. Settings
+- [ ] T1.1  Default values: enabled=false, enterToSend=true, escape=sendEscape, shortcut=toggleFocus
+- [ ] T1.2  Toggle each setting and verify it persists across app restart
+- [ ] T1.3  Reset All restores all settings to defaults
+- [ ] T1.4  Settings rows are dimmed/disabled when Enable Mode is off
+
+### T2. Basic Text Editing (F1)
+- [ ] T2.1  Type text and verify it appears in the TextBox
+- [ ] T2.2  Cmd+A selects all text
+- [ ] T2.3  Cmd+C/V/X copy, paste, cut
+- [ ] T2.4  Cmd+Z undo, Shift+Cmd+Z redo
+- [ ] T2.5  Option+Left/Right moves by word
+- [ ] T2.6  Mouse click positions cursor
+- [ ] T2.7  Mouse drag selects text
+- [ ] T2.8  Double-click selects word, triple-click selects line
+
+### T3. IME (F2)
+- [ ] T3.1  Japanese input (Hiragana → Kanji conversion) completes correctly
+- [ ] T3.2  Chinese pinyin input works
+- [ ] T3.3  Korean input works
+- [ ] T3.4  IME composition is not interrupted by terminal title updates
+
+### T4. Multi-line & Auto-grow (F3, F4)
+- [ ] T4.1  Shift+Return inserts newline (enterToSend=on)
+- [ ] T4.2  Return inserts newline (enterToSend=off)
+- [ ] T4.3  TextBox height grows from 2 lines up to 8 lines
+- [ ] T4.4  Beyond 8 lines, content scrolls internally
+- [ ] T4.5  After submit, TextBox shrinks back to minimum height
+
+### T5. Key Routing — Emacs (F5, Rule 1)
+- [ ] T5.1  Ctrl+A moves to beginning of line
+- [ ] T5.2  Ctrl+E moves to end of line
+- [ ] T5.3  Ctrl+F moves forward, Ctrl+B moves backward
+- [ ] T5.4  Ctrl+N moves down, Ctrl+P moves up (multi-line)
+- [ ] T5.5  Ctrl+K kills to end of line
+- [ ] T5.6  Ctrl+H deletes backward
+
+### T6. Key Routing — Terminal Forwarding (F5, Rules 2–5, 9)
+- [ ] T6.1  Ctrl+C sends SIGINT to terminal (focus stays in TextBox)
+- [ ] T6.2  Ctrl+D sends EOF to terminal
+- [ ] T6.3  Ctrl+Z sends SIGTSTP to terminal
+- [ ] T6.4  Ctrl+L clears terminal screen
+- [ ] T6.5  "/" in empty TextBox + Claude Code → forwarded, focus moves to terminal
+- [ ] T6.6  "/" in non-empty TextBox → typed as text
+- [ ] T6.7  "/" in empty TextBox + plain shell → typed as text
+- [ ] T6.8  "@" in empty TextBox + Claude Code → forwarded, focus moves to terminal
+- [ ] T6.9  "@" in empty TextBox + Codex → forwarded, focus moves to terminal
+- [ ] T6.10 "?" in empty TextBox + Claude Code → forwarded as key event, focus stays
+- [ ] T6.11 "?" in non-empty TextBox → typed as text
+- [ ] T6.12 Arrow Up/Down in empty TextBox → shell history navigation
+- [ ] T6.13 Tab in empty TextBox → tab completion in terminal
+- [ ] T6.14 Backspace in empty TextBox → forwarded to terminal
+- [ ] T6.15 Arrow keys in non-empty TextBox → cursor movement within TextBox
+
+### T7. Submit & Escape (F5, Rules 6–8)
+- [ ] T7.1  Return submits text (enterToSend=on)
+- [ ] T7.2  Shift+Return submits text (enterToSend=off)
+- [ ] T7.3  Submitted text appears in terminal with command execution
+- [ ] T7.4  TextBox is cleared after submit
+- [ ] T7.5  Empty submit sends just Return to terminal
+- [ ] T7.6  Escape sends ESC key to terminal (escape=sendEscape)
+- [ ] T7.7  Escape moves focus to terminal (escape=focusTerminal)
+- [ ] T7.8  Multi-line text is sent correctly via bracket paste
+
+### T8. Theme Sync (F6)
+- [ ] T8.1  TextBox background matches terminal background color
+- [ ] T8.2  TextBox text color matches terminal foreground color
+- [ ] T8.3  TextBox respects background-opacity setting
+- [ ] T8.4  Selection color is inverted (fg on bg)
+- [ ] T8.5  Font size matches terminal font size
+- [ ] T8.6  Cursor (insertion point) color matches foreground
+- [ ] T8.7  Theme changes are reflected immediately
+
+### T9. Toggle Shortcut (F7)
+- [ ] T9.1  Cmd+Opt+B shows TextBox when hidden (toggleDisplay mode)
+- [ ] T9.2  Cmd+Opt+B hides TextBox when shown (toggleDisplay mode)
+- [ ] T9.3  Cmd+Opt+B moves focus to TextBox when unfocused (toggleFocus mode)
+- [ ] T9.4  Cmd+Opt+B moves focus to terminal when TextBox focused (toggleFocus mode)
+- [ ] T9.5  Toggle applies to all tabs simultaneously
+- [ ] T9.6  Custom shortcut key works after changing in Settings
+- [ ] T9.7  Enabling "Enable Mode" setting forces TextBox visible
+
+### T10. Drag & Drop (F8)
+- [ ] T10.1  Drop single file → shell-escaped path inserted
+- [ ] T10.2  Drop multiple files → space-separated escaped paths
+- [ ] T10.3  Drop folder → folder path inserted
+- [ ] T10.4  Paths with spaces/special chars are properly escaped
+- [ ] T10.5  Green "+" badge appears when dragging over TextBox
+- [ ] T10.6  Dropped text is selected for review
+- [ ] T10.7  Drop onto terminal area still works normally
+
+### T11. Focus Guards (F11)
+- [ ] T11.1  Terminal ensureFocus does not steal focus from TextBox
+- [ ] T11.2  Find panel close does not steal focus from TextBox
+- [ ] T11.3  Clicking TextBox gives it focus
+- [ ] T11.4  Border brightens when focused, dims when unfocused
+
+### T12. App Detection (F12)
+- [ ] T12.1  "Claude Code" in title → detected
+- [ ] T12.2  "✱ Claude Code" or "✳ Claude Code" (with icon) → detected
+- [ ] T12.2b Title starting with "✳" (e.g. "✳ Japanese greeting conversation") → detected as Claude Code
+- [ ] T12.2c Title starting with "⠂" (e.g. "⠂ New coding session") → detected as Claude Code
+- [ ] T12.3  "Codex" in title → detected
+- [ ] T12.4  "zsh" or "bash" → not detected
+- [ ] T12.5  Detection is case-insensitive
+
+### T13. Bracket Paste & Timing (F13)
+- [ ] T13.1  Pasted text arrives in terminal correctly
+- [ ] T13.2  Return is sent after 200ms delay (not inside bracket paste)
+- [ ] T13.3  Shell (zsh) executes pasted commands correctly
+- [ ] T13.4  Claude CLI receives pasted prompts correctly
+
+### T14. Per-panel State (F14)
+- [ ] T14.1  Switching tabs preserves TextBox content
+- [ ] T14.2  Toggle applies to all tabs simultaneously (global, not per-tab)
+- [ ] T14.3  New tab inherits global Enable Mode setting
+- [ ] T14.4  Split panes each have their own TextBox
+
+### T15. Placeholder & Send Button (F9, F10)
+- [ ] T15.1  Placeholder text shows when TextBox is empty
+- [ ] T15.2  Placeholder disappears when text is entered
+- [ ] T15.3  Placeholder reflects current send key setting
+- [ ] T15.4  Send button submits text on click
+- [ ] T15.5  Send button shows hover highlight
+- [ ] T15.6  Send button shows press state
+
+## Upstream Impact
+
+Code added to upstream (manaflow-ai/cmux) files is marked with `[TextBox]`.
+Run `grep -r '\[TextBox\]' Sources/` to list all locations.
+*/
 
 import AppKit
 import SwiftUI
@@ -111,14 +294,14 @@ private enum TextBoxBehavior {
     /// Delay (ms) before sending Return when the TextBox is empty (no paste).
     /// Set to 0 to send Return immediately (default).
     static let emptyReturnKeyDelayMs: Int = 0
-    /// Scope of the Cmd+Opt+T toggle shortcut.
+    /// Scope of the Cmd+Opt+B toggle shortcut.
     /// `.active` = only the focused tab, `.all` = all tabs simultaneously.
     static let toggleScope: TextBoxToggleTarget = .all
 }
 
 // MARK: - Toggle Scope
 
-/// Scope of the TextBox toggle shortcut (Cmd+Opt+T).
+/// Scope of the TextBox toggle shortcut (Cmd+Opt+B).
 enum TextBoxToggleTarget {
     /// Toggle only the currently active (focused or TextBox-focused) panel.
     case active
@@ -159,7 +342,7 @@ enum TextBoxAppDetection: CaseIterable {
 // MARK: - Focus State
 
 /// The three observable states of the TextBox, used to decide what the
-/// toggle shortcut (Cmd+Opt+T) should do.
+/// toggle shortcut (Cmd+Opt+B) should do.
 ///
 /// Transitions on shortcut press:
 ///   hidden           → show TextBox + focus it
@@ -397,8 +580,7 @@ enum TextBoxInputSettings {
     static let escapeBehaviorKey = "textBoxEscapeBehavior"
     static let shortcutBehaviorKey = "textBoxShortcutBehavior"
 
-    // [cmux-tb] Default: true (cmux-tb ships with TextBox enabled; upstream cmux PR uses false)
-    static let defaultEnabled = true
+    static let defaultEnabled = true // [TextBox] [cmux-tb] Enabled by default in fork
     static let defaultEnterToSend = true
     static let defaultEscapeBehavior = TextBoxEscapeBehavior.sendEscape
     static let defaultShortcutBehavior = TextBoxShortcutBehavior.toggleFocus
@@ -445,7 +627,7 @@ enum TextBoxInputSettings {
     }
 }
 
-/// What the keyboard shortcut (Cmd+Opt+T) does.
+/// What the keyboard shortcut (Cmd+Opt+B) does.
 enum TextBoxShortcutBehavior: String, CaseIterable, Identifiable {
     /// Toggle TextBox visibility (show/hide).
     case toggleDisplay = "toggleDisplay"

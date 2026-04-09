@@ -21,9 +21,8 @@ final class TextBoxInputSettingsTests: XCTestCase {
         super.tearDown()
     }
 
-    // [cmux-tb] Default: true (upstream cmux PR expects false)
-    func testDefaultEnabledIsTrue() {
-        XCTAssertTrue(TextBoxInputSettings.isEnabled())
+    func testDefaultEnabledIsFalse() {
+        XCTAssertFalse(TextBoxInputSettings.isEnabled())
     }
 
     func testDefaultEnterToSendIsTrue() {
@@ -50,10 +49,9 @@ final class TextBoxShortcutTests: XCTestCase {
         super.tearDown()
     }
 
-    // [cmux-tb] Default: "t" (upstream cmux PR uses "b")
     func testToggleTextBoxInputDefaultShortcut() {
         let shortcut = KeyboardShortcutSettings.Action.toggleTextBoxInput.defaultShortcut
-        XCTAssertEqual(shortcut.key, "t")
+        XCTAssertEqual(shortcut.key, "b")
         XCTAssertTrue(shortcut.command)
         XCTAssertFalse(shortcut.shift)
         XCTAssertTrue(shortcut.option)

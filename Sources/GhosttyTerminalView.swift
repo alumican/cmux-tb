@@ -4,18 +4,40 @@ import AppKit
 import Metal
 import QuartzCore
 import Combine
+import CoreText
 import Darwin
+import Carbon.HIToolbox
 import Sentry
 import Bonsplit
 import IOSurface
 import UniformTypeIdentifiers
 
+@_silgen_name("ghostty_surface_clear_selection")
+private func ghostty_surface_clear_selection_compat(_ surface: ghostty_surface_t) -> Bool
+
+@_silgen_name("ghostty_surface_select_cursor_cell")
+private func ghostty_surface_select_cursor_cell_compat(_ surface: ghostty_surface_t) -> Bool
+
 #if os(macOS)
+func cmuxShouldApplyWindowGlass(
+    sidebarBlendMode: String,
+    bgGlassEnabled: Bool,
+    glassEffectAvailable _: Bool
+) -> Bool {
+    // Native NSGlassEffectView vs NSVisualEffectView fallback is chosen inside
+    // WindowGlassEffect.apply. User settings alone decide whether glass is on.
+    sidebarBlendMode == "behindWindow" && bgGlassEnabled
+}
+
 func cmuxShouldUseTransparentBackgroundWindow() -> Bool {
     let defaults = UserDefaults.standard
     let sidebarBlendMode = defaults.string(forKey: "sidebarBlendMode") ?? "withinWindow"
     let bgGlassEnabled = defaults.object(forKey: "bgGlassEnabled") as? Bool ?? false
-    return sidebarBlendMode == "behindWindow" && bgGlassEnabled && !WindowGlassEffect.isAvailable
+    return cmuxShouldApplyWindowGlass(
+        sidebarBlendMode: sidebarBlendMode,
+        bgGlassEnabled: bgGlassEnabled,
+        glassEffectAvailable: WindowGlassEffect.isAvailable
+    )
 }
 
 func cmuxShouldUseClearWindowBackground(for opacity: Double) -> Bool {
@@ -28,6 +50,14 @@ private func cmuxTransparentWindowBaseColor() -> NSColor {
     NSColor.white.withAlphaComponent(0.001)
 }
 #endif
+
+private func cmuxRuntimeReadClipboardCallback(
+    _ userdata: UnsafeMutableRawPointer?,
+    _ location: ghostty_clipboard_e,
+    _ state: UnsafeMutableRawPointer?
+) -> Bool {
+    GhosttyApp.runtimeReadClipboardCallback(userdata, location, state)
+}
 
 #if DEBUG
 private func cmuxChildExitProbePath() -> String? {
@@ -70,13 +100,16 @@ private func cmuxScalarHex(_ value: String?) -> String {
 }
 #endif
 
-private enum GhosttyPasteboardHelper {
+enum GhosttyPasteboardHelper {
     private static let selectionPasteboard = NSPasteboard(
         name: NSPasteboard.Name("com.mitchellh.ghostty.selection")
     )
     private static let utf8PlainTextType = NSPasteboard.PasteboardType("public.utf8-plain-text")
     private static let shellEscapeCharacters = "\\ ()[]{}<>\"'`!#$&;|*?\t"
+    private static let temporaryImageFilenamePrefix = "clipboard-"
     private static let objectReplacementCharacter = Character(UnicodeScalar(0xFFFC)!)
+    private static let temporaryImageOwnershipLock = NSLock()
+    private static var ownedTemporaryImagePaths: Set<String> = []
 
     static func pasteboard(for location: ghostty_clipboard_e) -> NSPasteboard? {
         switch location {
@@ -97,13 +130,9 @@ private enum GhosttyPasteboardHelper {
                 .joined(separator: " ")
         }
 
-        if let value = pasteboard.string(forType: .string) {
-            return value
-        }
-
-        if let value = pasteboard.string(forType: utf8PlainTextType) {
-            return value
-        }
+        let htmlText = attributedStringContents(from: pasteboard, type: .html, documentType: .html)
+        let rtfText = attributedStringContents(from: pasteboard, type: .rtf, documentType: .rtf)
+        let rtfdText = attributedStringContents(from: pasteboard, type: .rtfd, documentType: .rtfd)
 
         if hasImageData(in: pasteboard),
            let html = pasteboard.string(forType: .html),
@@ -111,25 +140,24 @@ private enum GhosttyPasteboardHelper {
             return nil
         }
 
-        if let htmlText = attributedStringContents(from: pasteboard, type: .html, documentType: .html) {
-            return htmlText
+        if hasImageData(in: pasteboard) {
+            if let htmlText { return htmlText }
+            if let rtfText { return rtfText }
+            return rtfdText
         }
 
-        if let rtfText = attributedStringContents(from: pasteboard, type: .rtf, documentType: .rtf) {
-            return rtfText
+        if let value = plainTextContents(from: pasteboard) {
+            return value
         }
 
-        return attributedStringContents(from: pasteboard, type: .rtfd, documentType: .rtfd)
+        if let htmlText { return htmlText }
+        if let rtfText { return rtfText }
+        return rtfdText
     }
 
     static func hasString(for location: ghostty_clipboard_e) -> Bool {
         guard let pasteboard = pasteboard(for: location) else { return false }
-        let types = pasteboard.types ?? []
-        if types.contains(.fileURL) || types.contains(.string) || types.contains(utf8PlainTextType)
-            || types.contains(.html) || types.contains(.rtf) || types.contains(.rtfd) {
-            return true
-        }
-        return hasImageData(in: pasteboard)
+        return hasPasteableContents(in: pasteboard)
     }
 
     static func writeString(_ string: String, to location: ghostty_clipboard_e) {
@@ -139,11 +167,19 @@ private enum GhosttyPasteboardHelper {
     }
 
     static func escapeForShell(_ value: String) -> String {
+        if value.contains(where: { $0 == "\n" || $0 == "\r" }) {
+            return shellSingleQuoted(value)
+        }
         var result = value
         for char in shellEscapeCharacters {
             result = result.replacingOccurrences(of: String(char), with: "\\\(char)")
         }
         return result
+    }
+
+    private static func shellSingleQuoted(_ value: String) -> String {
+        let escaped = value.replacingOccurrences(of: "'", with: "'\\''")
+        return "'\(escaped)'"
     }
 
     private static func attributedStringContents(
@@ -164,6 +200,41 @@ private enum GhosttyPasteboardHelper {
 
         guard let sanitized, !sanitized.isEmpty else { return nil }
         return sanitized
+    }
+
+    private static func plainTextContents(from pasteboard: NSPasteboard) -> String? {
+        for type in pasteboard.types ?? [] {
+            guard isPlainTextType(type) else { continue }
+            guard let value = pasteboard.string(forType: type), !value.isEmpty else { continue }
+            return value
+        }
+
+        return nil
+    }
+
+    private static func hasPasteableContents(in pasteboard: NSPasteboard) -> Bool {
+        let types = pasteboard.types ?? []
+        if types.contains(.fileURL) || types.contains(.html) || types.contains(.rtf) || types.contains(.rtfd) {
+            return true
+        }
+        if types.contains(where: isPlainTextType) {
+            return true
+        }
+        return hasImageData(in: pasteboard)
+    }
+
+    private static func isPlainTextType(_ type: NSPasteboard.PasteboardType) -> Bool {
+        if type == .string || type == utf8PlainTextType {
+            return true
+        }
+
+        guard type != .html,
+              type != .rtf,
+              type != .rtfd,
+              type != .fileURL,
+              let utType = UTType(type.rawValue) else { return false }
+
+        return utType.conforms(to: .plainText)
     }
 
     private static func attributedString(
@@ -295,11 +366,11 @@ private enum GhosttyPasteboardHelper {
 
     /// When the clipboard contains only image data (or rich text that resolves to
     /// an attachment-only image), saves it as a temporary image file and returns the
-    /// shell-escaped file path. Returns nil if the clipboard contains text or no image.
-    static func saveClipboardImageIfNeeded(
+    /// file URL. Returns nil if the clipboard contains text or no image.
+    static func saveImageFileURLIfNeeded(
         from pasteboard: NSPasteboard = .general,
         assumeNoText: Bool = false
-    ) -> String? {
+    ) -> URL? {
         if !assumeNoText && stringContents(from: pasteboard) != nil { return nil }
 
         let imageData: Data
@@ -332,11 +403,11 @@ private enum GhosttyPasteboardHelper {
         formatter.dateFormat = "yyyy-MM-dd-HHmmss"
         formatter.locale = Locale(identifier: "en_US_POSIX")
         let timestamp = formatter.string(from: Date())
-        let filename = "clipboard-\(timestamp)-\(UUID().uuidString.prefix(8)).\(fileExtension)"
-        let path = (NSTemporaryDirectory() as NSString).appendingPathComponent(filename)
+        let filename = "\(temporaryImageFilenamePrefix)\(timestamp)-\(UUID().uuidString.prefix(8)).\(fileExtension)"
+        let fileURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
 
         do {
-            try imageData.write(to: URL(fileURLWithPath: path))
+            try imageData.write(to: fileURL)
         } catch {
 #if DEBUG
             dlog("terminal.paste.image.writeFailed error=\(error.localizedDescription)")
@@ -344,7 +415,45 @@ private enum GhosttyPasteboardHelper {
             return nil
         }
 
-        return escapeForShell(path)
+        registerOwnedTemporaryImageFile(fileURL)
+        return fileURL
+    }
+
+    /// When the clipboard contains only image data (or rich text that resolves to
+    /// an attachment-only image), saves it as a temporary image file and returns the
+    /// shell-escaped file path. Returns nil if the clipboard contains text or no image.
+    static func saveClipboardImageIfNeeded(
+        from pasteboard: NSPasteboard = .general,
+        assumeNoText: Bool = false
+    ) -> String? {
+        saveImageFileURLIfNeeded(from: pasteboard, assumeNoText: assumeNoText)
+            .map { escapeForShell($0.path) }
+    }
+
+    static func cleanupTransferredTemporaryImageFiles(_ fileURLs: [URL]) {
+        for fileURL in fileURLs {
+            let normalizedURL = fileURL.standardizedFileURL
+            guard normalizedURL.isFileURL,
+                  consumeOwnedTemporaryImageFile(normalizedURL) else {
+                continue
+            }
+            try? FileManager.default.removeItem(at: normalizedURL)
+        }
+    }
+
+    private static func registerOwnedTemporaryImageFile(_ fileURL: URL) {
+        let normalizedPath = fileURL.standardizedFileURL.path
+        temporaryImageOwnershipLock.lock()
+        ownedTemporaryImagePaths.insert(normalizedPath)
+        temporaryImageOwnershipLock.unlock()
+    }
+
+    private static func consumeOwnedTemporaryImageFile(_ fileURL: URL) -> Bool {
+        let normalizedPath = fileURL.standardizedFileURL.path
+        temporaryImageOwnershipLock.lock()
+        let didOwnFile = ownedTemporaryImagePaths.remove(normalizedPath) != nil
+        temporaryImageOwnershipLock.unlock()
+        return didOwnFile
     }
 }
 
@@ -353,10 +462,248 @@ func cmuxPasteboardStringContentsForTesting(_ pasteboard: NSPasteboard) -> Strin
     GhosttyPasteboardHelper.stringContents(from: pasteboard)
 }
 
+func cmuxPasteboardImageFileURLForTesting(_ pasteboard: NSPasteboard) -> URL? {
+    GhosttyPasteboardHelper.saveImageFileURLIfNeeded(from: pasteboard)
+}
+
 func cmuxPasteboardImagePathForTesting(_ pasteboard: NSPasteboard) -> String? {
     GhosttyPasteboardHelper.saveClipboardImageIfNeeded(from: pasteboard)
 }
+
+func cmuxResolveQuicklookPathForTesting(
+    _ rawText: String,
+    cwd: String,
+    existingPaths: Set<String>
+) -> String? {
+    cmuxResolveQuicklookPath(
+        rawText,
+        cwd: cwd,
+        fileExists: { path in
+            existingPaths.contains((path as NSString).standardizingPath)
+        }
+    )
+}
 #endif
+
+private func cmuxResolveQuicklookPath(
+    _ rawText: String,
+    cwd: String?,
+    fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+) -> String? {
+    let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+
+    var seenPaths: Set<String> = []
+    for token in cmuxQuicklookPathCandidates(from: trimmed) {
+        let normalizedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedToken.isEmpty else { continue }
+
+        let expandedToken = (normalizedToken as NSString).expandingTildeInPath
+        let candidatePath: String
+        if expandedToken.hasPrefix("/") {
+            candidatePath = expandedToken
+        } else {
+            guard let cwd, !cwd.isEmpty else { continue }
+            candidatePath = (cwd as NSString).appendingPathComponent(expandedToken)
+        }
+
+        let standardizedPath = (candidatePath as NSString).standardizingPath
+        guard seenPaths.insert(standardizedPath).inserted else { continue }
+        if fileExists(standardizedPath) {
+            return standardizedPath
+        }
+    }
+
+    return nil
+}
+
+private func cmuxQuicklookPathCandidates(from rawText: String) -> [String] {
+    var candidates: [String] = []
+
+    func append(_ candidate: String?) {
+        guard let candidate else { return }
+        let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !candidates.contains(trimmed) else { return }
+        candidates.append(trimmed)
+    }
+
+    append(rawText)
+
+    let unescaped = cmuxUnescapeShellToken(rawText)
+    if unescaped != rawText {
+        append(unescaped)
+    }
+
+    if let unquoted = cmuxUnquoteShellToken(rawText) {
+        append(unquoted)
+        let unescapedUnquoted = cmuxUnescapeShellToken(unquoted)
+        if unescapedUnquoted != unquoted {
+            append(unescapedUnquoted)
+        }
+    }
+
+    return candidates
+}
+
+private func cmuxUnquoteShellToken(_ token: String) -> String? {
+    guard token.count >= 2,
+          let first = token.first,
+          let last = token.last,
+          first == last,
+          first == "'" || first == "\"" else {
+        return nil
+    }
+    return String(token.dropFirst().dropLast())
+}
+
+private func cmuxUnescapeShellToken(_ token: String) -> String {
+    var output = String.UnicodeScalarView()
+    output.reserveCapacity(token.unicodeScalars.count)
+    var escaping = false
+
+    for scalar in token.unicodeScalars {
+        if escaping {
+            output.append(scalar)
+            escaping = false
+            continue
+        }
+
+        if scalar == "\\" {
+            escaping = true
+            continue
+        }
+
+        output.append(scalar)
+    }
+
+    if escaping {
+        output.append(UnicodeScalar(0x5C)!)
+    }
+
+    return String(output)
+}
+
+private func cmuxVisibleTerminalLines(from text: String, rows: Int) -> [String] {
+    let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+    if lines.count > rows {
+        return Array(lines.suffix(rows))
+    }
+    return lines
+}
+
+private func cmuxShellEscapedTokenContainingColumn(
+    in line: String,
+    column: Int
+) -> String? {
+    let characters = Array(line)
+    guard !characters.isEmpty, column >= 0, column < characters.count else { return nil }
+
+    var index = 0
+    while index < characters.count {
+        while index < characters.count, characters[index].isWhitespace {
+            index += 1
+        }
+        let start = index
+
+        while index < characters.count {
+            let character = characters[index]
+            guard character.isWhitespace else {
+                index += 1
+                continue
+            }
+
+            var backslashCount = 0
+            var lookbehind = index - 1
+            while lookbehind >= start, characters[lookbehind] == "\\" {
+                backslashCount += 1
+                lookbehind -= 1
+            }
+
+            if backslashCount % 2 == 1 {
+                index += 1
+                continue
+            }
+
+            break
+        }
+
+        if start < index, column >= start, column < index {
+            return String(characters[start..<index])
+        }
+    }
+
+    return nil
+}
+
+private func cmuxIsHardPathDelimiter(
+    in characters: [Character],
+    at index: Int
+) -> Bool {
+    let character = characters[index]
+    if character == "\t" || character == "\n" || character == "\r" {
+        return true
+    }
+
+    guard character.isWhitespace else { return false }
+    let previousIsWhitespace = index > 0 && characters[index - 1].isWhitespace
+    let nextIsWhitespace = (index + 1) < characters.count && characters[index + 1].isWhitespace
+    return previousIsWhitespace || nextIsWhitespace
+}
+
+private func cmuxRawPathSegmentContainingColumn(
+    in line: String,
+    column: Int
+) -> String? {
+    let characters = Array(line)
+    guard !characters.isEmpty, column >= 0, column < characters.count else { return nil }
+    guard !cmuxIsHardPathDelimiter(in: characters, at: column) else { return nil }
+
+    var start = column
+    while start > 0, !cmuxIsHardPathDelimiter(in: characters, at: start - 1) {
+        start -= 1
+    }
+
+    var end = column
+    while (end + 1) < characters.count, !cmuxIsHardPathDelimiter(in: characters, at: end + 1) {
+        end += 1
+    }
+
+    let candidate = String(characters[start...end]).trimmingCharacters(in: .whitespacesAndNewlines)
+    return candidate.isEmpty ? nil : candidate
+}
+
+private func cmuxPathCandidatesContainingColumn(
+    in line: String,
+    column: Int
+) -> [String] {
+    var candidates: [String] = []
+
+    func append(_ candidate: String?) {
+        guard let candidate else { return }
+        let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !candidates.contains(trimmed) else { return }
+        candidates.append(trimmed)
+    }
+
+    append(cmuxRawPathSegmentContainingColumn(in: line, column: column))
+    append(cmuxShellEscapedTokenContainingColumn(in: line, column: column))
+
+    return candidates
+}
+
+private func cmuxResolveVisibleLinePath(
+    _ line: String,
+    column: Int,
+    cwd: String,
+    fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+) -> (rawToken: String, path: String)? {
+    for rawToken in cmuxPathCandidatesContainingColumn(in: line, column: column) {
+        if let resolvedPath = cmuxResolveQuicklookPath(rawToken, cwd: cwd, fileExists: fileExists) {
+            return (rawToken, resolvedPath)
+        }
+    }
+    return nil
+}
 
 enum TerminalOpenURLTarget: Equatable {
     case embeddedBrowser(URL)
@@ -844,13 +1191,19 @@ class GhosttyApp {
 
     private(set) var app: ghostty_app_t?
     private(set) var config: ghostty_config_t?
+    /// Coalesce wakeup → tick dispatches.  The I/O thread may fire wakeup_cb
+    /// thousands of times per second during bulk output.  We only need one
+    /// pending tick on the main queue at any time.
+    private var _tickScheduled = false
+    private let _tickLock = NSLock()
     private(set) var defaultBackgroundColor: NSColor = .windowBackgroundColor
     private(set) var defaultBackgroundOpacity: Double = 1.0
-    
+    private(set) var usesHostLayerBackground = true
+
     // [TextBox] Default foreground color resolved from Ghostty runtime config,
     // used to keep TextBox text color consistent with the terminal.
     private(set) var defaultForegroundColor: NSColor = .textColor
-    
+
     private static func resolveBackgroundLogURL(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> URL {
@@ -869,6 +1222,120 @@ class GhosttyApp {
         }
 
         return URL(fileURLWithPath: "/tmp/cmux-bg.log")
+    }
+
+    fileprivate static func runtimeReadClipboardCallback(
+        _ userdata: UnsafeMutableRawPointer?,
+        _ location: ghostty_clipboard_e,
+        _ state: UnsafeMutableRawPointer?
+    ) -> Bool {
+        guard let callbackContext = Self.callbackContext(from: userdata),
+              let requestSurface = callbackContext.runtimeSurface else { return false }
+
+        DispatchQueue.main.async {
+            func completeClipboardRequest(with text: String) {
+                let finish = {
+                    guard callbackContext.runtimeSurface == requestSurface else { return }
+                    text.withCString { ptr in
+                        ghostty_surface_complete_clipboard_request(requestSurface, ptr, state, false)
+                    }
+                }
+                if Thread.isMainThread {
+                    finish()
+                } else {
+                    DispatchQueue.main.async(execute: finish)
+                }
+            }
+
+            guard let pasteboard = GhosttyPasteboardHelper.pasteboard(for: location) else {
+                completeClipboardRequest(with: "")
+                return
+            }
+
+            let preparedContent = TerminalImageTransferPlanner.prepare(
+                pasteboard: pasteboard,
+                mode: .paste
+            )
+
+            switch preparedContent {
+            case .reject:
+                completeClipboardRequest(with: "")
+            case .insertText(let text):
+                completeClipboardRequest(with: text)
+            case .fileURLs(let fileURLs):
+                let operation = TerminalImageTransferOperation()
+                MainActor.assumeIsolated {
+                    callbackContext.terminalSurface?.hostedView.beginImageTransferIndicator(
+                        for: operation,
+                        onCancel: {
+                            completeClipboardRequest(with: "")
+                        }
+                    )
+                }
+
+                let target = MainActor.assumeIsolated {
+                    callbackContext.terminalSurface?.resolvedImageTransferTarget() ?? .local
+                }
+                let plan = TerminalImageTransferPlanner.plan(
+                    fileURLs: fileURLs,
+                    target: target
+                )
+
+                TerminalImageTransferPlanner.execute(
+                    plan: plan,
+                    operation: operation,
+                    uploadWorkspaceRemote: { fileURLs, operation, finish in
+                        guard let workspace = MainActor.assumeIsolated({
+                            callbackContext.terminalSurface?.owningWorkspace()
+                        }) else {
+                            finish(.failure(NSError(domain: "cmux.remote.paste", code: 3)))
+                            GhosttyPasteboardHelper.cleanupTransferredTemporaryImageFiles(fileURLs)
+                            return
+                        }
+                        workspace.uploadDroppedFilesForRemoteTerminal(
+                            fileURLs,
+                            operation: operation,
+                            completion: { result in
+                                finish(result)
+                                GhosttyPasteboardHelper.cleanupTransferredTemporaryImageFiles(fileURLs)
+                            }
+                        )
+                    },
+                    uploadDetectedSSH: { session, fileURLs, operation, finish in
+                        session.uploadDroppedFiles(
+                            fileURLs,
+                            operation: operation,
+                            completion: { result in
+                                finish(result)
+                                GhosttyPasteboardHelper.cleanupTransferredTemporaryImageFiles(fileURLs)
+                            }
+                        )
+                    },
+                    insertText: { text in
+                        MainActor.assumeIsolated {
+                            callbackContext.terminalSurface?.hostedView.endImageTransferIndicator(
+                                for: operation
+                            )
+                        }
+                        completeClipboardRequest(with: text)
+                    },
+                    onFailure: { _ in
+                        MainActor.assumeIsolated {
+                            callbackContext.terminalSurface?.hostedView.endImageTransferIndicator(
+                                for: operation
+                            )
+                        }
+                        NSSound.beep()
+#if DEBUG
+                        dlog("terminal.remotePasteUpload.failed surface=\(callbackContext.surfaceId.uuidString.prefix(5))")
+#endif
+                        completeClipboardRequest(with: "")
+                    }
+                )
+            }
+        }
+
+        return true
     }
 
     let backgroundLogEnabled = {
@@ -992,7 +1459,7 @@ class GhosttyApp {
         let line = "[\(timestamp)] \(message)\n"
         if let handle = FileHandle(forWritingAtPath: initLogPath) {
             handle.seekToEndOfFile()
-            handle.write(line.data(using: .utf8)!)
+            handle.write(Data(line.utf8))
             handle.closeFile()
         } else {
             FileManager.default.createFile(atPath: initLogPath, contents: line.data(using: .utf8))
@@ -1043,35 +1510,22 @@ class GhosttyApp {
         runtimeConfig.userdata = Unmanaged.passUnretained(self).toOpaque()
         runtimeConfig.supports_selection_clipboard = true
         runtimeConfig.wakeup_cb = { userdata in
-            DispatchQueue.main.async {
-                GhosttyApp.shared.tick()
-            }
+            GhosttyApp.shared.scheduleTick()
         }
         runtimeConfig.action_cb = { app, target, action in
             return GhosttyApp.shared.handleAction(target: target, action: action)
         }
-        runtimeConfig.read_clipboard_cb = { userdata, location, state in
-            // Read clipboard
-            guard let callbackContext = GhosttyApp.callbackContext(from: userdata),
-                  let surface = callbackContext.runtimeSurface else { return }
-
-            let pasteboard = GhosttyPasteboardHelper.pasteboard(for: location)
-            var value = pasteboard.flatMap { GhosttyPasteboardHelper.stringContents(from: $0) } ?? ""
-
-            // When clipboard has only image data (e.g. screenshot), save as temp
-            // PNG and paste the file path so CLI tools can receive images.
-            if value.isEmpty,
-               let imagePath = pasteboard.flatMap({
-                   GhosttyPasteboardHelper.saveClipboardImageIfNeeded(from: $0, assumeNoText: true)
-               })
-            {
-                value = imagePath
-            }
-
-            value.withCString { ptr in
-                ghostty_surface_complete_clipboard_request(surface, ptr, state, false)
-            }
-        }
+        // Some GhosttyKit builds import this callback as returning `Void` in Swift even
+        // though the C ABI returns `bool`. Store the C-compatible shim explicitly so the
+        // project compiles against both importer variants.
+        runtimeConfig.read_clipboard_cb = unsafeBitCast(
+            cmuxRuntimeReadClipboardCallback as @convention(c) (
+                UnsafeMutableRawPointer?,
+                ghostty_clipboard_e,
+                UnsafeMutableRawPointer?
+            ) -> Bool,
+            to: ghostty_runtime_read_clipboard_cb.self
+        )
         runtimeConfig.confirm_read_clipboard_cb = { userdata, content, state, _ in
             guard let content else { return }
             guard let callbackContext = GhosttyApp.callbackContext(from: userdata),
@@ -1164,6 +1618,13 @@ class GhosttyApp {
                 return
             }
 
+            loadInlineGhosttyConfig(
+                "macos-background-from-layer = true",
+                into: fallbackConfig,
+                prefix: "cmux-layer-bg",
+                logLabel: "layer background (fallback)"
+            )
+            usesHostLayerBackground = true
             ghostty_config_finalize(fallbackConfig)
             updateDefaultBackground(from: fallbackConfig, source: "initialize.fallbackConfig")
 
@@ -1211,46 +1672,101 @@ class GhosttyApp {
         #endif
     }
 
-    private func loadDefaultConfigFilesWithLegacyFallback(_ config: ghostty_config_t) {
-        ghostty_config_load_default_files(config)
-        loadLegacyGhosttyConfigIfNeeded(config)
-        ghostty_config_load_recursive_files(config)
-        loadCmuxAppSupportGhosttyConfigIfNeeded(config)
-        loadCJKFontFallbackIfNeeded(config)
-        ghostty_config_finalize(config)
-    }
-
-    /// When the user has not configured `font-codepoint-map` for CJK ranges,
-    /// Ghostty's `CTFontCollection` scoring may pick an inappropriate fallback
-    /// font for Hiragana, Katakana, and CJK symbols. The scoring prioritizes
-    /// monospace fonts, so decorative fonts with monospace attributes (e.g.
-    /// AB_appare from Adobe CC, or LingWai) can be selected depending on what
-    /// is installed. This injects a sensible default based on the system's
-    /// preferred languages.
-    ///
-    /// See: https://github.com/manaflow-ai/cmux/pull/1017
-    private func loadCJKFontFallbackIfNeeded(_ config: ghostty_config_t) {
-        if Self.userConfigContainsCJKCodepointMap() { return }
-
-        guard let mappings = Self.cjkFontMappings() else { return }
-
-        let lines = mappings.map { range, font in
-            "font-codepoint-map = \(range)=\(font)"
-        }.joined(separator: "\n")
+    private func loadInlineGhosttyConfig(
+        _ contents: String,
+        into config: ghostty_config_t,
+        prefix: String,
+        logLabel: String
+    ) {
+        let trimmed = contents.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
 
         let tmpURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("cmux-cjk-font-fallback-\(UUID().uuidString).conf")
+            .appendingPathComponent("\(prefix)-\(UUID().uuidString).conf")
         do {
-            try lines.write(to: tmpURL, atomically: true, encoding: .utf8)
+            try trimmed.write(to: tmpURL, atomically: true, encoding: .utf8)
             defer { try? FileManager.default.removeItem(at: tmpURL) }
             tmpURL.path.withCString { path in
                 ghostty_config_load_file(config, path)
             }
         } catch {
             #if DEBUG
-            Self.initLog("failed to write CJK font fallback config: \(error)")
+            dlog("ghostty.config.inlineLoad.failed label=\(logLabel) error=\(error.localizedDescription)")
             #endif
         }
+    }
+
+    private func hasConfiguredBackgroundImage(_ config: ghostty_config_t) -> Bool {
+        var backgroundImage: UnsafePointer<Int8>?
+        let key = "background-image"
+        guard ghostty_config_get(config, &backgroundImage, key, UInt(key.lengthOfBytes(using: .utf8))),
+              let backgroundImage else {
+            return false
+        }
+
+        return !String(cString: backgroundImage).isEmpty
+    }
+
+    private func loadDefaultConfigFilesWithLegacyFallback(_ config: ghostty_config_t) {
+        ghostty_config_load_default_files(config)
+        loadLegacyGhosttyConfigIfNeeded(config)
+        ghostty_config_load_recursive_files(config)
+        loadCmuxAppSupportGhosttyConfigIfNeeded(config)
+        loadCJKFontFallbackIfNeeded(config)
+        let useHostLayerBackground = !hasConfiguredBackgroundImage(config)
+        usesHostLayerBackground = useHostLayerBackground
+        if !useHostLayerBackground {
+            // Background images need Ghostty's fullscreen background pass. Force
+            // the layer-backed solid-color shortcut back off even if the user
+            // config enabled it manually.
+            loadInlineGhosttyConfig(
+                "macos-background-from-layer = false",
+                into: config,
+                prefix: "cmux-layer-bg-image-override",
+                logLabel: "layer background image override"
+            )
+        } else {
+            // cmux provides the terminal background via backgroundView (CALayer)
+            // instead of the GPU full-screen bg pass, so the layer can provide
+            // instant coverage during sidebar toggle and other layout transitions.
+            //
+            // Keep Ghostty's native background rendering when a background image
+            // is configured: the separate CALayer background only matches the
+            // solid-color path, not Ghostty's combined image compositing.
+            loadInlineGhosttyConfig(
+                "macos-background-from-layer = true",
+                into: config,
+                prefix: "cmux-layer-bg",
+                logLabel: "layer background"
+            )
+        }
+        ghostty_config_finalize(config)
+    }
+
+    /// When the user has not configured `font-codepoint-map` for CJK ranges
+    /// and has not already provided an explicit multi-entry `font-family`
+    /// fallback chain, Ghostty's `CTFontCollection` scoring may pick an
+    /// inappropriate fallback font for Hiragana, Katakana, and CJK symbols.
+    /// The scoring prioritizes monospace fonts, so decorative fonts with
+    /// monospace attributes (e.g. AB_appare from Adobe CC, or LingWai) can be
+    /// selected depending on what is installed. This injects a sensible
+    /// default based on the system's preferred languages without overriding
+    /// user-managed fallback chains or configured fonts that already cover
+    /// the affected CJK ranges.
+    ///
+    /// See: https://github.com/manaflow-ai/cmux/pull/1017
+    private func loadCJKFontFallbackIfNeeded(_ config: ghostty_config_t) {
+        guard let mappings = Self.autoInjectedCJKFontMappings() else { return }
+
+        let lines = mappings.map { range, font in
+            "font-codepoint-map = \(range)=\(font)"
+        }.joined(separator: "\n")
+        loadInlineGhosttyConfig(
+            lines,
+            into: config,
+            prefix: "cmux-cjk-font-fallback",
+            logLabel: "CJK font fallback"
+        )
     }
 
     /// Unicode ranges shared by all CJK languages (Han ideographs, symbols, fullwidth forms).
@@ -1268,11 +1784,55 @@ class GhosttyApp {
         "U+30A0-U+30FF",  // Katakana
     ]
 
-    /// Unicode ranges specific to Korean (Hangul).
-    private static let koreanRanges = [
-        "U+AC00-U+D7AF",  // Hangul Syllables
-        "U+1100-U+11FF",  // Hangul Jamo
+    /// Representative scalars used to detect whether the configured primary
+    /// font already covers the ranges cmux would otherwise auto-map.
+    private static let cjkCoverageSampleCharactersByRange: [String: [UniChar]] = [
+        "U+3000-U+303F": [0x3001, 0x300C],
+        "U+4E00-U+9FFF": [0x4E00, 0x65E5, 0x6C34],
+        "U+F900-U+FAFF": [0xF900],
+        "U+FF00-U+FFEF": [0xFF10, 0xFF21],
+        "U+3400-U+4DBF": [0x3400],
+        "U+1100-U+11FF": [0x1100, 0x1161],
+        "U+3130-U+318F": [0x3131, 0x314F],
+        "U+3040-U+309F": [0x3042, 0x3093],
+        "U+30A0-U+30FF": [0x30A2, 0x30F3],
+        "U+AC00-U+D7AF": [0xAC00, 0xD55C],
     ]
+
+    private struct UserFontConfigSummary {
+        var containsCodepointMap = false
+        var effectiveFontFamilies: [String] = []
+
+        var hasExplicitFontFamilyFallbackChain: Bool {
+            effectiveFontFamilies.count > 1
+        }
+
+        mutating func applyFontCodepointMap(_ value: String) {
+            if value.isEmpty {
+                containsCodepointMap = false
+                return
+            }
+
+            guard value.contains("=") else {
+                return
+            }
+
+            containsCodepointMap = true
+        }
+
+        mutating func recordFontFamily(_ value: String) {
+            if value.isEmpty {
+                effectiveFontFamilies.removeAll()
+                return
+            }
+
+            guard !effectiveFontFamilies.contains(value) else {
+                return
+            }
+
+            effectiveFontFamilies.append(value)
+        }
+    }
 
     /// Returns (range, font) pairs for CJK font fallback based on the system's
     /// preferred languages, or nil if no CJK language is detected. Each language
@@ -1292,9 +1852,6 @@ class GhosttyApp {
             if lower.hasPrefix("ja") {
                 font = "Hiragino Sans"
                 langRanges = japaneseRanges
-            } else if lower.hasPrefix("ko") {
-                font = "Apple SD Gothic Neo"
-                langRanges = koreanRanges
             } else if lower.hasPrefix("zh-hant") || lower.hasPrefix("zh-tw") || lower.hasPrefix("zh-hk") {
                 font = "PingFang TC"
             } else if lower.hasPrefix("zh") {
@@ -1318,93 +1875,276 @@ class GhosttyApp {
         return mappings.isEmpty ? nil : mappings
     }
 
+    /// Returns only the CJK mappings cmux should auto-inject after respecting
+    /// explicit user overrides and the glyph coverage of the configured
+    /// primary font family.
+    static func autoInjectedCJKFontMappings(
+        preferredLanguages: [String] = Locale.preferredLanguages,
+        configPaths: [String] = loadedCJKScanPaths(),
+        rangeCoverageProbe: ((String, String) -> Bool)? = nil
+    ) -> [(String, String)]? {
+        guard var mappings = cjkFontMappings(preferredLanguages: preferredLanguages) else { return nil }
+
+        let summary = userFontConfigSummary(configPaths: configPaths)
+        if summary.containsCodepointMap || summary.hasExplicitFontFamilyFallbackChain {
+            return nil
+        }
+
+        guard let configuredFontFamily = summary.effectiveFontFamilies.first else {
+            return mappings
+        }
+
+        if let rangeCoverageProbe {
+            mappings.removeAll { range, _ in
+                rangeCoverageProbe(configuredFontFamily, range)
+            }
+        } else if let configuredFont = configuredCTFont(named: configuredFontFamily) {
+            mappings.removeAll { range, _ in
+                fontContainsGlyphs(configuredFont, forRange: range)
+            }
+        }
+
+        return mappings.isEmpty ? nil : mappings
+    }
+
     /// Checks whether the user's Ghostty config files already contain
     /// a `font-codepoint-map` entry covering CJK ranges. Also checks
     /// application-support config paths that cmux may load at runtime.
     static func userConfigContainsCJKCodepointMap(
-        configPaths: [String] = defaultCJKScanPaths()
+        configPaths: [String] = loadedCJKScanPaths()
     ) -> Bool {
-        var visited = Set<String>()
-        for rawPath in configPaths {
-            let path = NSString(string: rawPath).expandingTildeInPath
-            if Self.configFileContainsCodepointMap(atPath: path, visited: &visited) {
-                return true
-            }
-        }
-        return false
+        userFontConfigSummary(configPaths: configPaths).containsCodepointMap
     }
 
-    /// Returns the default set of config paths to scan for existing
-    /// `font-codepoint-map` entries. Includes both the standard Ghostty
-    /// config locations and any app-support paths that cmux may load.
-    private static func defaultCJKScanPaths() -> [String] {
+    static func userConfigHasExplicitFontFamilyFallbackChain(
+        configPaths: [String] = loadedCJKScanPaths()
+    ) -> Bool {
+        userFontConfigSummary(configPaths: configPaths).hasExplicitFontFamilyFallbackChain
+    }
+
+    static func shouldInjectCJKFontFallback(
+        preferredLanguages: [String] = Locale.preferredLanguages,
+        configPaths: [String] = loadedCJKScanPaths(),
+        rangeCoverageProbe: ((String, String) -> Bool)? = nil
+    ) -> Bool {
+        autoInjectedCJKFontMappings(
+            preferredLanguages: preferredLanguages,
+            configPaths: configPaths,
+            rangeCoverageProbe: rangeCoverageProbe
+        ) != nil
+    }
+
+    private static func configuredCTFont(
+        named name: String,
+        size: CGFloat = 12
+    ) -> CTFont? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let font = CTFontCreateWithName(trimmed as CFString, size, nil)
+        let normalizedRequestedName = normalizedFontName(trimmed)
+        let resolvedNames = [
+            kCTFontFamilyNameKey,
+            kCTFontFullNameKey,
+            kCTFontPostScriptNameKey,
+        ].compactMap { CTFontCopyName(font, $0) as String? }
+
+        guard resolvedNames.contains(where: { normalizedFontName($0) == normalizedRequestedName }) else {
+            return nil
+        }
+
+        return font
+    }
+
+    private static func fontContainsGlyphs(
+        _ font: CTFont,
+        forRange range: String
+    ) -> Bool {
+        guard let characters = cjkCoverageSampleCharactersByRange[range] else {
+            return false
+        }
+
+        var glyphs = Array(repeating: CGGlyph(), count: characters.count)
+        let hasGlyphs = CTFontGetGlyphsForCharacters(font, characters, &glyphs, characters.count)
+        return hasGlyphs && !glyphs.contains(0)
+    }
+
+    private static func normalizedFontName(_ name: String) -> String {
+        name
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+            .folding(options: [.diacriticInsensitive, .widthInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+            .lowercased()
+    }
+
+    private static func userFontConfigSummary(
+        configPaths: [String] = loadedCJKScanPaths()
+    ) -> UserFontConfigSummary {
+        var summary = UserFontConfigSummary()
+        var recursiveConfigPaths: [String] = []
+
+        for path in configPaths.map({ NSString(string: $0).expandingTildeInPath }) {
+            scanFontConfigFile(
+                atPath: path,
+                summary: &summary,
+                recursiveConfigPaths: &recursiveConfigPaths
+            )
+        }
+
+        var loadedRecursivePaths = Set<String>()
+        var index = 0
+        while index < recursiveConfigPaths.count {
+            let path = recursiveConfigPaths[index]
+            index += 1
+            let resolved = (path as NSString).standardizingPath
+            guard !loadedRecursivePaths.contains(resolved) else { continue }
+            loadedRecursivePaths.insert(resolved)
+
+            scanFontConfigFile(
+                atPath: path,
+                summary: &summary,
+                recursiveConfigPaths: &recursiveConfigPaths
+            )
+        }
+
+        return summary
+    }
+
+    /// Returns the top-level config paths that cmux will actually load before
+    /// recursive `config-file` processing.
+    static func loadedCJKScanPaths(
+        currentBundleIdentifier: String? = Bundle.main.bundleIdentifier,
+        appSupportDirectory: URL? = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first
+    ) -> [String] {
         var paths = [
             "~/.config/ghostty/config",
             "~/.config/ghostty/config.ghostty",
-            "~/Library/Application Support/com.mitchellh.ghostty/config",
-            "~/Library/Application Support/com.mitchellh.ghostty/config.ghostty",
         ]
-        if let appSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first {
-            let releaseDir = appSupport.appendingPathComponent(releaseBundleIdentifier)
-            paths.append(releaseDir.appendingPathComponent("config").path)
-            paths.append(releaseDir.appendingPathComponent("config.ghostty").path)
 
-            if let bundleId = Bundle.main.bundleIdentifier, bundleId != releaseBundleIdentifier {
-                let currentDir = appSupport.appendingPathComponent(bundleId)
-                paths.append(currentDir.appendingPathComponent("config").path)
-                paths.append(currentDir.appendingPathComponent("config.ghostty").path)
-            }
+        guard let bundleId = currentBundleIdentifier,
+              !bundleId.isEmpty,
+              let appSupportDirectory else { return paths }
+
+        let appSupportConfigURLs = cmuxAppSupportConfigURLs(
+            currentBundleIdentifier: bundleId,
+            appSupportDirectory: appSupportDirectory
+        )
+        paths.append(contentsOf: appSupportConfigURLs.map(\.path))
+
+        let releaseDir = appSupportDirectory.appendingPathComponent(releaseBundleIdentifier, isDirectory: true)
+        let releaseLegacyConfig = releaseDir.appendingPathComponent("config", isDirectory: false)
+        let releaseConfig = releaseDir.appendingPathComponent("config.ghostty", isDirectory: false)
+
+        let releaseConfigSize = configFileSize(at: releaseConfig)
+        let releaseLegacyConfigSize = configFileSize(at: releaseLegacyConfig)
+
+        if shouldLoadLegacyGhosttyConfig(
+            newConfigFileSize: releaseConfigSize,
+            legacyConfigFileSize: releaseLegacyConfigSize
+        ), !paths.contains(releaseLegacyConfig.path) {
+            paths.append(releaseLegacyConfig.path)
         }
+
         return paths
     }
 
-    /// Scans a single config file (and any files it includes) for
-    /// `font-codepoint-map` entries. Tracks visited paths to prevent
-    /// infinite recursion on cyclic includes.
-    private static func configFileContainsCodepointMap(
-        atPath path: String,
-        visited: inout Set<String>
-    ) -> Bool {
-        let resolved = (path as NSString).standardizingPath
-        guard !visited.contains(resolved) else { return false }
-        visited.insert(resolved)
+    private static func configFileSize(at url: URL) -> Int? {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attrs[.size] as? NSNumber else { return nil }
+        return size.intValue
+    }
 
+    /// Scans a single config file for font settings relevant to cmux's
+    /// injected CJK fallback and updates the pending recursive config-file
+    /// queue using Ghostty's repeatable path semantics.
+    private static func scanFontConfigFile(
+        atPath path: String,
+        summary: inout UserFontConfigSummary,
+        recursiveConfigPaths: inout [String]
+    ) {
+        let resolved = (path as NSString).standardizingPath
         guard let contents = try? String(contentsOfFile: resolved, encoding: .utf8) else {
-            return false
+            return
         }
         let parentDir = (resolved as NSString).deletingLastPathComponent
 
         for line in contents.components(separatedBy: .newlines) {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("#") { continue }
-            if trimmed.hasPrefix("font-codepoint-map") {
-                return true
-            }
-            if trimmed.hasPrefix("config-file") {
-                let parts = trimmed.split(separator: "=", maxSplits: 1)
-                if parts.count == 2 {
-                    var includePath = parts[1]
-                        .trimmingCharacters(in: .whitespaces)
-                    // Ghostty supports optional includes with a trailing '?'
-                    if includePath.hasSuffix("?") {
-                        includePath.removeLast()
-                    }
-                    includePath = includePath
-                        .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
-                    let expanded = NSString(string: includePath).expandingTildeInPath
-                    let absolute = (expanded as NSString).isAbsolutePath
-                        ? expanded
-                        : (parentDir as NSString).appendingPathComponent(expanded)
-                    if configFileContainsCodepointMap(atPath: absolute, visited: &visited) {
-                        return true
-                    }
-                }
+            guard let entry = parsedConfigEntry(from: line) else { continue }
+
+            switch entry.key {
+            case "font-codepoint-map":
+                guard let value = entry.value else { continue }
+                summary.applyFontCodepointMap(value)
+            case "font-family":
+                guard let value = entry.value else { continue }
+                summary.recordFontFamily(value)
+            case "config-file":
+                guard let value = entry.value else { continue }
+                applyConfigFileDirective(
+                    value,
+                    parentDir: parentDir,
+                    recursiveConfigPaths: &recursiveConfigPaths
+                )
+            default:
+                continue
             }
         }
-        return false
+    }
+
+    private static func parsedConfigEntry(
+        from rawLine: String
+    ) -> (key: String, value: String?)? {
+        var trimmed = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("\u{FEFF}") {
+            trimmed.removeFirst()
+        }
+        if trimmed.isEmpty || trimmed.hasPrefix("#") { return nil }
+
+        guard let separatorIndex = trimmed.firstIndex(of: "=") else {
+            return (trimmed.trimmingCharacters(in: .whitespacesAndNewlines), nil)
+        }
+
+        let key = trimmed[..<separatorIndex].trimmingCharacters(in: .whitespacesAndNewlines)
+        var value = trimmed[trimmed.index(after: separatorIndex)...]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if value.count >= 2, value.hasPrefix("\""), value.hasSuffix("\"") {
+            value.removeFirst()
+            value.removeLast()
+        }
+
+        return (String(key), String(value))
+    }
+
+    private static func applyConfigFileDirective(
+        _ value: String,
+        parentDir: String,
+        recursiveConfigPaths: inout [String]
+    ) {
+        if value.isEmpty {
+            recursiveConfigPaths.removeAll()
+            return
+        }
+
+        var includePath = value
+        if includePath.hasPrefix("?") {
+            includePath.removeFirst()
+        }
+        if includePath.count >= 2, includePath.hasPrefix("\""), includePath.hasSuffix("\"") {
+            includePath.removeFirst()
+            includePath.removeLast()
+        }
+        guard !includePath.isEmpty else { return }
+
+        let expanded = NSString(string: includePath).expandingTildeInPath
+        let absolute = (expanded as NSString).isAbsolutePath
+            ? expanded
+            : (parentDir as NSString).appendingPathComponent(expanded)
+        recursiveConfigPaths.append(absolute)
     }
 
     static func shouldLoadLegacyGhosttyConfig(
@@ -1548,7 +2288,22 @@ class GhosttyApp {
         #endif
     }
 
+    /// Schedule a single tick on the main queue, coalescing multiple wakeups.
+    func scheduleTick() {
+        _tickLock.lock()
+        defer { _tickLock.unlock() }
+        guard !_tickScheduled else { return }
+        _tickScheduled = true
+        DispatchQueue.main.async {
+            self.tick()
+        }
+    }
+
     func tick() {
+        _tickLock.lock()
+        _tickScheduled = false
+        _tickLock.unlock()
+
         guard let app = app else { return }
 
         let start = CACurrentMediaTime()
@@ -1563,7 +2318,14 @@ class GhosttyApp {
         }
     }
 
-    func reloadConfiguration(soft: Bool = false, source: String = "unspecified") {
+    func reloadConfiguration(
+        soft: Bool = false,
+        source: String = "unspecified",
+        reloadSettingsFromFile: Bool = true
+    ) {
+        if reloadSettingsFromFile {
+            KeyboardShortcutSettings.settingsFileStore.reload()
+        }
         guard let app else {
             logThemeAction("reload skipped source=\(source) soft=\(soft) reason=no_app")
             return
@@ -1634,7 +2396,10 @@ class GhosttyApp {
         }
         guard shouldReload else { return }
         lastAppearanceColorScheme = currentColorScheme
-        reloadConfiguration(source: "appearanceSync:\(source)")
+        reloadConfiguration(
+            source: "appearanceSync:\(source)",
+            reloadSettingsFromFile: false
+        )
     }
 
     func openConfigurationInTextEdit() {
@@ -1687,6 +2452,7 @@ class GhosttyApp {
             )
         }
 
+        // [TextBox] Extract foreground color so TextBox text matches the terminal
         var fgColor = ghostty_config_color_s()
         let fgKey = "foreground"
         if ghostty_config_get(config, &fgColor, fgKey, UInt(fgKey.lengthOfBytes(using: .utf8))) {
@@ -1748,10 +2514,10 @@ class GhosttyApp {
 
     private func bellAudioPath() -> String? {
         guard let config else { return nil }
-        var value = ghostty_config_path_s()
+        var value: UnsafePointer<Int8>?
         let key = "bell-audio-path"
         guard ghostty_config_get(config, &value, key, UInt(key.lengthOfBytes(using: .utf8))),
-              let rawPath = value.path else {
+              let rawPath = value else {
             return nil
         }
         let path = String(cString: rawPath)
@@ -2073,8 +2839,11 @@ class GhosttyApp {
                 return false
             }
             return performOnMain {
-                guard let tabManager = AppDelegate.shared?.tabManager else { return false }
-                return tabManager.newSplit(tabId: tabId, surfaceId: surfaceId, direction: direction) != nil
+                guard let app = AppDelegate.shared,
+                      let tabManager = app.tabManagerFor(tabId: tabId) ?? app.tabManager else {
+                    return false
+                }
+                return tabManager.createSplit(tabId: tabId, surfaceId: surfaceId, direction: direction) != nil
             }
         case GHOSTTY_ACTION_RING_BELL:
             performOnMain {
@@ -2126,24 +2895,21 @@ class GhosttyApp {
             }
         case GHOSTTY_ACTION_SCROLLBAR:
             let scrollbar = GhosttyScrollbar(c: action.action.scrollbar)
-            surfaceView.scrollbar = scrollbar
-            NotificationCenter.default.post(
-                name: .ghosttyDidUpdateScrollbar,
-                object: surfaceView,
-                userInfo: [GhosttyNotificationKey.scrollbar: scrollbar]
-            )
+            surfaceView.enqueueScrollbarUpdate(scrollbar)
             return true
         case GHOSTTY_ACTION_CELL_SIZE:
             let cellSize = CGSize(
                 width: CGFloat(action.action.cell_size.width),
                 height: CGFloat(action.action.cell_size.height)
             )
-            surfaceView.cellSize = cellSize
-            NotificationCenter.default.post(
-                name: .ghosttyDidUpdateCellSize,
-                object: surfaceView,
-                userInfo: [GhosttyNotificationKey.cellSize: cellSize]
-            )
+            DispatchQueue.main.async {
+                surfaceView.cellSize = cellSize
+                NotificationCenter.default.post(
+                    name: .ghosttyDidUpdateCellSize,
+                    object: surfaceView,
+                    userInfo: [GhosttyNotificationKey.cellSize: cellSize]
+                )
+            }
             return true
         case GHOSTTY_ACTION_START_SEARCH:
             guard let terminalSurface = surfaceView.terminalSurface else { return true }
@@ -2204,7 +2970,7 @@ class GhosttyApp {
                   let surfaceId = surfaceView.terminalSurface?.id else { return true }
             let pwd = action.action.pwd.pwd.flatMap { String(cString: $0) } ?? ""
             DispatchQueue.main.async {
-                AppDelegate.shared?.tabManager?.updateSurfaceDirectory(
+                AppDelegate.shared?.tabManagerFor(tabId: tabId)?.updateSurfaceDirectory(
                     tabId: tabId,
                     surfaceId: surfaceId,
                     directory: pwd
@@ -2240,7 +3006,7 @@ class GhosttyApp {
         case GHOSTTY_ACTION_COLOR_CHANGE:
             if action.action.color_change.kind == GHOSTTY_ACTION_COLOR_KIND_BACKGROUND {
                 let change = action.action.color_change
-                surfaceView.backgroundColor = NSColor(
+                let newColor = NSColor(
                     red: CGFloat(change.r) / 255,
                     green: CGFloat(change.g) / 255,
                     blue: CGFloat(change.b) / 255,
@@ -2248,28 +3014,29 @@ class GhosttyApp {
                 )
                 if backgroundLogEnabled {
                     logBackground(
-                        "surface override set tab=\(surfaceView.tabId?.uuidString ?? "nil") surface=\(surfaceView.terminalSurface?.id.uuidString ?? "nil") override=\(surfaceView.backgroundColor?.hexString() ?? "nil") default=\(defaultBackgroundColor.hexString()) source=action.color_change.surface"
+                        "surface override set tab=\(surfaceView.tabId?.uuidString ?? "nil") surface=\(surfaceView.terminalSurface?.id.uuidString ?? "nil") override=\(newColor.hexString()) default=\(defaultBackgroundColor.hexString()) source=action.color_change.surface"
                     )
                 }
-                surfaceView.applySurfaceBackground()
-                if backgroundLogEnabled {
-                    logBackground("OSC background change tab=\(surfaceView.tabId?.uuidString ?? "unknown") color=\(surfaceView.backgroundColor?.description ?? "nil")")
-                }
-                DispatchQueue.main.async {
+                DispatchQueue.main.async { [self] in
+                    surfaceView.backgroundColor = newColor
+                    surfaceView.applySurfaceBackground()
+                    if backgroundLogEnabled {
+                        logBackground("OSC background change tab=\(surfaceView.tabId?.uuidString ?? "unknown") color=\(surfaceView.backgroundColor?.description ?? "nil")")
+                    }
                     surfaceView.applyWindowBackgroundIfActive()
                 }
             }
             return true
         case GHOSTTY_ACTION_CONFIG_CHANGE:
-            if let staleOverride = surfaceView.backgroundColor {
-                surfaceView.backgroundColor = nil
-                if backgroundLogEnabled {
-                    logBackground(
-                        "surface override cleared tab=\(surfaceView.tabId?.uuidString ?? "nil") surface=\(surfaceView.terminalSurface?.id.uuidString ?? "nil") cleared=\(staleOverride.hexString()) source=action.config_change.surface"
-                    )
-                }
-                surfaceView.applySurfaceBackground()
-                DispatchQueue.main.async {
+            DispatchQueue.main.async { [self] in
+                if let staleOverride = surfaceView.backgroundColor {
+                    surfaceView.backgroundColor = nil
+                    if backgroundLogEnabled {
+                        logBackground(
+                            "surface override cleared tab=\(surfaceView.tabId?.uuidString ?? "nil") surface=\(surfaceView.terminalSurface?.id.uuidString ?? "nil") cleared=\(staleOverride.hexString()) source=action.config_change.surface"
+                        )
+                    }
+                    surfaceView.applySurfaceBackground()
                     surfaceView.applyWindowBackgroundIfActive()
                 }
             }
@@ -2427,6 +3194,7 @@ class GhosttyApp {
         if cmuxShouldUseClearWindowBackground(for: defaultBackgroundOpacity) {
             window.backgroundColor = cmuxTransparentWindowBaseColor()
             window.isOpaque = false
+            applyWindowBlurIfNeeded(window)
             if backgroundLogEnabled {
                 logBackground("applied transparent window background opacity=\(String(format: "%.3f", defaultBackgroundOpacity))")
             }
@@ -2438,6 +3206,16 @@ class GhosttyApp {
                 logBackground("applied default window background color=\(color) opacity=\(String(format: "%.3f", color.alphaComponent))")
             }
         }
+    }
+
+    func applyWindowBlurIfNeeded(_ window: NSWindow) {
+        guard let app = self.app else { return }
+        // ghostty_set_window_background_blur reads background-blur and
+        // background-opacity from the app config internally and calls
+        // CGSSetWindowBackgroundBlurRadius — a compositor-level setter that is
+        // idempotent.  It is a no-op when opacity >= 1.0 or blur is disabled,
+        // so we can call it unconditionally whenever the window is transparent.
+        ghostty_set_window_background_blur(app, Unmanaged.passUnretained(window).toOpaque())
     }
 
     private func activeMainWindow() -> NSWindow? {
@@ -2502,6 +3280,51 @@ final class GhosttyMetalLayer: CAMetalLayer {
     }
 }
 
+final class TerminalSurfaceRegistry {
+    static let shared = TerminalSurfaceRegistry()
+
+    private let lock = NSLock()
+    private let surfaces = NSHashTable<AnyObject>.weakObjects()
+    private var runtimeSurfaceOwners: [UInt: UUID] = [:]
+
+    private init() {}
+
+    func register(_ surface: TerminalSurface) {
+        lock.lock()
+        defer { lock.unlock() }
+        surfaces.add(surface)
+    }
+
+    func registerRuntimeSurface(_ surface: ghostty_surface_t, ownerId: UUID) {
+        lock.lock()
+        defer { lock.unlock() }
+        runtimeSurfaceOwners[UInt(bitPattern: surface)] = ownerId
+    }
+
+    func unregisterRuntimeSurface(_ surface: ghostty_surface_t, ownerId: UUID) {
+        lock.lock()
+        defer { lock.unlock() }
+        let key = UInt(bitPattern: surface)
+        guard runtimeSurfaceOwners[key] == ownerId else { return }
+        runtimeSurfaceOwners.removeValue(forKey: key)
+    }
+
+    func runtimeSurfaceOwnerId(_ surface: ghostty_surface_t) -> UUID? {
+        lock.lock()
+        defer { lock.unlock() }
+        return runtimeSurfaceOwners[UInt(bitPattern: surface)]
+    }
+
+    func allSurfaces() -> [TerminalSurface] {
+        lock.lock()
+        let objects = surfaces.allObjects.compactMap { $0 as? TerminalSurface }
+        lock.unlock()
+        return objects.sorted { lhs, rhs in
+            lhs.id.uuidString < rhs.id.uuidString
+        }
+    }
+}
+
 // MARK: - Terminal Surface (owns the ghostty_surface_t lifecycle)
 
 final class TerminalSurface: Identifiable, ObservableObject {
@@ -2517,8 +3340,38 @@ final class TerminalSurface: Identifiable, ObservableObject {
         }
     }
 
+    private struct PendingKeyEvent {
+        let keycode: UInt32
+        let mods: ghostty_input_mods_e
+        let label: String
+    }
+
+    private enum PendingSocketInput {
+        case text(Data)
+        case key(PendingKeyEvent)
+
+        var estimatedBytes: Int {
+            switch self {
+            case .text(let data):
+                return data.count
+            case .key(let event):
+                return max(event.label.utf8.count, 1)
+            }
+        }
+    }
+
     private(set) var surface: ghostty_surface_t?
     private weak var attachedView: GhosttyNSView?
+
+    /// Whether the runtime Ghostty surface exists and has not begun teardown.
+    ///
+    /// Use this as a quick availability check. Before passing `surface` to
+    /// Ghostty C APIs that dereference the pointer (e.g.
+    /// `ghostty_surface_inherited_config`, `ghostty_surface_quicklook_font`),
+    /// call `liveSurfaceForGhosttyAccess(reason:)` so stale freed pointers are
+    /// rejected and quarantined.
+    var hasLiveSurface: Bool { surface != nil && portalLifecycleState == .live }
+
     /// Whether the terminal surface view is currently attached to a window.
     ///
     /// Use the hosted view rather than the inner surface view, since the surface can be
@@ -2539,8 +3392,10 @@ final class TerminalSurface: Identifiable, ObservableObject {
         return val > 0 ? val : 10
     }()
     private let surfaceContext: ghostty_surface_context_e
-    private let configTemplate: ghostty_surface_config_s?
+    private let configTemplate: CmuxSurfaceConfigTemplate?
     private let workingDirectory: String?
+    private let initialCommand: String?
+    private let initialEnvironmentOverrides: [String: String]
     var requestedWorkingDirectory: String? { workingDirectory }
     private var additionalEnvironment: [String: String]
     let hostedView: GhosttySurfaceScrollView
@@ -2549,13 +3404,29 @@ final class TerminalSurface: Identifiable, ObservableObject {
     private var lastPixelHeight: UInt32 = 0
     private var lastXScale: CGFloat = 0
     private var lastYScale: CGFloat = 0
-    private var pendingTextQueue: [Data] = []
-    private var pendingTextBytes: Int = 0
-    private let maxPendingTextBytes = 1_048_576
+    private let debugMetadataLock = NSLock()
+    private let createdAt: Date = Date()
+    private var runtimeSurfaceCreatedAt: Date?
+    private var teardownRequestedAt: Date?
+    private var teardownRequestReason: String?
+    private var pendingSocketInputQueue: [PendingSocketInput] = []
+    private var pendingSocketInputBytes: Int = 0
+    private let maxPendingSocketInputBytes = 1_048_576
     private var backgroundSurfaceStartQueued = false
     private var surfaceCallbackContext: Unmanaged<GhosttySurfaceCallbackContext>?
+    /// The desired focus state for the Ghostty C surface. May be set before the
+    /// C surface exists (e.g. during layout restoration); `createSurface`
+    /// reapplies this value once the runtime surface exists, then keeps using it
+    /// as a dedup guard to avoid redundant `ghostty_surface_set_focus` calls
+    /// (prevents prompt redraws with P10k).
+    ///
+    /// Start unfocused and only opt into focus when the workspace/AppKit focus
+    /// path explicitly requests it so background panes do not keep a focused
+    /// state unless the workspace focus path requests it.
+    private var desiredFocusState: Bool = false
 #if DEBUG
     private var needsConfirmCloseOverrideForTesting: Bool?
+    private var runtimeSurfaceFreedOutOfBandForTesting = false
 #endif
     private enum PortalLifecycleState: String {
         case live
@@ -2564,6 +3435,8 @@ final class TerminalSurface: Identifiable, ObservableObject {
     }
     private struct PortalHostLease {
         let hostId: ObjectIdentifier
+        let paneId: UUID
+        let instanceSerial: UInt64
         let inWindow: Bool
         let area: CGFloat
     }
@@ -2611,8 +3484,10 @@ final class TerminalSurface: Identifiable, ObservableObject {
     init(
         tabId: UUID,
         context: ghostty_surface_context_e,
-        configTemplate: ghostty_surface_config_s?,
+        configTemplate: CmuxSurfaceConfigTemplate?,
         workingDirectory: String? = nil,
+        initialCommand: String? = nil,
+        initialEnvironmentOverrides: [String: String] = [:],
         additionalEnvironment: [String: String] = [:]
     ) {
         self.id = UUID()
@@ -2620,7 +3495,10 @@ final class TerminalSurface: Identifiable, ObservableObject {
         self.surfaceContext = context
         self.configTemplate = configTemplate
         self.workingDirectory = workingDirectory?.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.additionalEnvironment = additionalEnvironment
+        let trimmedCommand = initialCommand?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.initialCommand = (trimmedCommand?.isEmpty == false) ? trimmedCommand : nil
+        self.initialEnvironmentOverrides = Self.mergedNormalizedEnvironment(base: [:], overrides: initialEnvironmentOverrides)
+        self.additionalEnvironment = Self.mergedNormalizedEnvironment(base: [:], overrides: additionalEnvironment)
         // Match Ghostty's own SurfaceView: ensure a non-zero initial frame so the backing layer
         // has non-zero bounds and the renderer can initialize without presenting a blank/stretched
         // intermediate frame on the first real resize.
@@ -2629,6 +3507,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
         self.hostedView = GhosttySurfaceScrollView(surfaceView: view)
         // Surface is created when attached to a view
         hostedView.attachSurface(self)
+        TerminalSurfaceRegistry.shared.register(self)
     }
 
 
@@ -2636,6 +3515,57 @@ final class TerminalSurface: Identifiable, ObservableObject {
         tabId = newTabId
         attachedView?.tabId = newTabId
         surfaceView.tabId = newTabId
+    }
+
+    private static func mergedNormalizedEnvironment(
+        base: [String: String],
+        overrides: [String: String]
+    ) -> [String: String] {
+        var merged: [String: String] = [:]
+        merged.reserveCapacity(base.count + overrides.count)
+        for (rawKey, value) in base {
+            let key = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty else { continue }
+            merged[key] = value
+        }
+        for (rawKey, value) in overrides {
+            let key = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty else { continue }
+            merged[key] = value
+        }
+        return merged
+    }
+
+    static let managedTerminalType = "xterm-256color"
+    static let managedTerminalProgram = "ghostty"
+    static let managedColorTerm = "truecolor"
+
+    static func applyManagedTerminalIdentityEnvironment(
+        to environment: inout [String: String],
+        protectedKeys: inout Set<String>
+    ) {
+        environment["TERM"] = managedTerminalType
+        protectedKeys.insert("TERM")
+        environment["COLORTERM"] = managedColorTerm
+        protectedKeys.insert("COLORTERM")
+        environment["TERM_PROGRAM"] = managedTerminalProgram
+        protectedKeys.insert("TERM_PROGRAM")
+    }
+
+    static func mergedStartupEnvironment(
+        base: [String: String],
+        protectedKeys: Set<String>,
+        additionalEnvironment: [String: String],
+        initialEnvironmentOverrides: [String: String]
+    ) -> [String: String] {
+        var merged = base
+        for (key, value) in additionalEnvironment where !key.isEmpty && !value.isEmpty && !protectedKeys.contains(key) {
+            merged[key] = value
+        }
+        for (key, value) in initialEnvironmentOverrides where !protectedKeys.contains(key) {
+            merged[key] = value
+        }
+        return merged
     }
 
     func isAttached(to view: GhosttyNSView) -> Bool {
@@ -2650,6 +3580,48 @@ final class TerminalSurface: Identifiable, ObservableObject {
         portalLifecycleState.rawValue
     }
 
+    private func withDebugMetadataLock<T>(_ body: () -> T) -> T {
+        debugMetadataLock.lock()
+        defer { debugMetadataLock.unlock() }
+        return body()
+    }
+
+    func debugCreatedAt() -> Date {
+        withDebugMetadataLock { createdAt }
+    }
+
+    func debugRuntimeSurfaceCreatedAt() -> Date? {
+        withDebugMetadataLock { runtimeSurfaceCreatedAt }
+    }
+
+    func debugTeardownRequest() -> (requestedAt: Date?, reason: String?) {
+        withDebugMetadataLock { (teardownRequestedAt, teardownRequestReason) }
+    }
+
+    func debugLastKnownWorkspaceId() -> UUID {
+        tabId
+    }
+
+    func debugSurfaceContextLabel() -> String {
+        cmuxSurfaceContextName(surfaceContext)
+    }
+
+    func debugInitialCommand() -> String? {
+        initialCommand
+    }
+
+    func debugPortalHostLease() -> (hostId: String?, paneId: UUID?, inWindow: Bool?, area: CGFloat?) {
+        guard let activePortalHostLease else {
+            return (nil, nil, nil, nil)
+        }
+        return (
+            hostId: String(describing: activePortalHostLease.hostId),
+            paneId: activePortalHostLease.paneId,
+            inWindow: activePortalHostLease.inWindow,
+            area: activePortalHostLease.area
+        )
+    }
+
     func canAcceptPortalBinding(expectedSurfaceId: UUID?, expectedGeneration: UInt64?) -> Bool {
         guard portalLifecycleState == .live else { return false }
         if let expectedSurfaceId, expectedSurfaceId != id {
@@ -2661,8 +3633,35 @@ final class TerminalSurface: Identifiable, ObservableObject {
         return true
     }
 
+    @MainActor
+    func liveSurfaceForGhosttyAccess(reason: String) -> ghostty_surface_t? {
+        guard hasLiveSurface, let surface else { return nil }
+        let registry = TerminalSurfaceRegistry.shared
+        let registeredOwnerId = registry.runtimeSurfaceOwnerId(surface)
+        guard registeredOwnerId == id,
+              cmuxSurfacePointerAppearsLive(surface) else {
+            let callbackContext = surfaceCallbackContext
+            surfaceCallbackContext = nil
+            registry.unregisterRuntimeSurface(surface, ownerId: id)
+            self.surface = nil
+            activePortalHostLease = nil
+            recordTeardownRequest(reason: reason)
+            markPortalLifecycleClosed(reason: reason)
+#if DEBUG
+            let registeredOwnerToken = registeredOwnerId.map { String($0.uuidString.prefix(5)) } ?? "nil"
+            dlog(
+                "surface.lifecycle.stale surface=\(id.uuidString.prefix(5)) " +
+                "workspace=\(tabId.uuidString.prefix(5)) reason=\(reason) " +
+                "registryOwner=\(registeredOwnerToken)"
+            )
+#endif
+            callbackContext?.release()
+            return nil
+        }
+        return surface
+    }
+
     private static let portalHostAreaThreshold: CGFloat = 4
-    private static let portalHostReplacementAreaGainRatio: CGFloat = 1.2
 
     private static func portalHostArea(for bounds: CGRect) -> CGFloat {
         max(0, bounds.width) * max(0, bounds.height)
@@ -2672,14 +3671,42 @@ final class TerminalSurface: Identifiable, ObservableObject {
         lease.inWindow && lease.area > portalHostAreaThreshold
     }
 
+    @discardableResult
+    func preparePortalHostReplacementIfOwned(hostId: ObjectIdentifier, reason: String) -> Bool {
+        guard let current = activePortalHostLease, current.hostId == hostId else { return false }
+        // SwiftUI can tear down and rebuild the host NSView during split churn. Keep the
+        // existing portal binding alive, but make the old lease non-usable so the next
+        // distinct host in the same pane can claim immediately instead of waiting for a
+        // later layout-follow-up retry.
+        activePortalHostLease = PortalHostLease(
+            hostId: current.hostId,
+            paneId: current.paneId,
+            instanceSerial: current.instanceSerial,
+            inWindow: false,
+            area: current.area
+        )
+#if DEBUG
+        dlog(
+            "terminal.portal.host.rearm surface=\(id.uuidString.prefix(5)) " +
+            "reason=\(reason) host=\(hostId) pane=\(current.paneId.uuidString.prefix(5)) " +
+            "area=\(String(format: "%.1f", current.area))"
+        )
+#endif
+        return true
+    }
+
     func claimPortalHost(
         hostId: ObjectIdentifier,
+        paneId: PaneID,
+        instanceSerial: UInt64,
         inWindow: Bool,
         bounds: CGRect,
         reason: String
     ) -> Bool {
         let next = PortalHostLease(
             hostId: hostId,
+            paneId: paneId.id,
+            instanceSerial: instanceSerial,
             inWindow: inWindow,
             area: Self.portalHostArea(for: bounds)
         )
@@ -2692,17 +3719,30 @@ final class TerminalSurface: Identifiable, ObservableObject {
 
             let currentUsable = Self.portalHostIsUsable(current)
             let nextUsable = Self.portalHostIsUsable(next)
+            // During split churn SwiftUI can briefly keep the old host alive while the new
+            // host for the same pane is already in the window. Prefer the newer live host
+            // immediately so the surface moves with the pane instead of waiting for a later
+            // update from unrelated focus/layout work.
+            let newerSamePaneHostReady =
+                current.paneId == paneId.id &&
+                nextUsable &&
+                next.instanceSerial > current.instanceSerial
+            // A dragged terminal must hand off immediately when it moves to a different pane.
+            // Waiting for the old host to become "worse" leaves the moved pane blank/stale.
             let shouldReplace =
+                current.paneId != paneId.id ||
                 !currentUsable ||
-                (nextUsable && next.area > (current.area * Self.portalHostReplacementAreaGainRatio))
+                newerSamePaneHostReady
 
             if shouldReplace {
 #if DEBUG
                 dlog(
                     "terminal.portal.host.claim surface=\(id.uuidString.prefix(5)) " +
-                    "reason=\(reason) host=\(hostId) inWin=\(inWindow ? 1 : 0) " +
+                    "reason=\(reason) host=\(hostId) pane=\(paneId.id.uuidString.prefix(5)) " +
+                    "inWin=\(inWindow ? 1 : 0) " +
                     "size=\(String(format: "%.1fx%.1f", bounds.width, bounds.height)) " +
-                    "replacingHost=\(current.hostId) replacingInWin=\(current.inWindow ? 1 : 0) " +
+                    "replacingHost=\(current.hostId) replacingPane=\(current.paneId.uuidString.prefix(5)) " +
+                    "replacingInWin=\(current.inWindow ? 1 : 0) " +
                     "replacingArea=\(String(format: "%.1f", current.area))"
                 )
 #endif
@@ -2713,9 +3753,11 @@ final class TerminalSurface: Identifiable, ObservableObject {
 #if DEBUG
             dlog(
                 "terminal.portal.host.skip surface=\(id.uuidString.prefix(5)) " +
-                "reason=\(reason) host=\(hostId) inWin=\(inWindow ? 1 : 0) " +
+                "reason=\(reason) host=\(hostId) pane=\(paneId.id.uuidString.prefix(5)) " +
+                "inWin=\(inWindow ? 1 : 0) " +
                 "size=\(String(format: "%.1fx%.1f", bounds.width, bounds.height)) " +
-                "ownerHost=\(current.hostId) ownerInWin=\(current.inWindow ? 1 : 0) " +
+                "ownerHost=\(current.hostId) ownerPane=\(current.paneId.uuidString.prefix(5)) " +
+                "ownerInWin=\(current.inWindow ? 1 : 0) " +
                 "ownerArea=\(String(format: "%.1f", current.area))"
             )
 #endif
@@ -2726,7 +3768,8 @@ final class TerminalSurface: Identifiable, ObservableObject {
 #if DEBUG
         dlog(
             "terminal.portal.host.claim surface=\(id.uuidString.prefix(5)) " +
-            "reason=\(reason) host=\(hostId) inWin=\(inWindow ? 1 : 0) " +
+            "reason=\(reason) host=\(hostId) pane=\(paneId.id.uuidString.prefix(5)) " +
+            "inWin=\(inWindow ? 1 : 0) " +
             "size=\(String(format: "%.1fx%.1f", bounds.width, bounds.height)) replacingHost=nil"
         )
 #endif
@@ -2739,15 +3782,39 @@ final class TerminalSurface: Identifiable, ObservableObject {
 #if DEBUG
         dlog(
             "terminal.portal.host.release surface=\(id.uuidString.prefix(5)) " +
-            "reason=\(reason) host=\(hostId) inWin=\(current.inWindow ? 1 : 0) " +
+            "reason=\(reason) host=\(hostId) pane=\(current.paneId.uuidString.prefix(5)) " +
+            "inWin=\(current.inWindow ? 1 : 0) " +
             "area=\(String(format: "%.1f", current.area))"
         )
 #endif
     }
 
+    private func recordTeardownRequest(reason: String) {
+        withDebugMetadataLock {
+            if teardownRequestedAt == nil {
+                teardownRequestedAt = Date()
+            }
+            if let existing = teardownRequestReason, !existing.isEmpty {
+                return
+            }
+            teardownRequestReason = reason
+        }
+    }
+
+    private func recordRuntimeSurfaceCreation() {
+        withDebugMetadataLock {
+            runtimeSurfaceCreatedAt = Date()
+        }
+    }
+
+    private func allowsRuntimeSurfaceCreation() -> Bool {
+        portalLifecycleState == .live
+    }
+
     func beginPortalCloseLifecycle(reason: String) {
         guard portalLifecycleState != .closed else { return }
         guard portalLifecycleState != .closing else { return }
+        recordTeardownRequest(reason: reason)
         portalLifecycleState = .closing
         portalLifecycleGeneration &+= 1
 #if DEBUG
@@ -2776,18 +3843,30 @@ final class TerminalSurface: Identifiable, ObservableObject {
     /// before deinit; deinit will skip the free if already torn down.
     @MainActor
     func teardownSurface() {
+        recordTeardownRequest(reason: "surface.teardown")
         markPortalLifecycleClosed(reason: "teardown")
 
         let callbackContext = surfaceCallbackContext
         surfaceCallbackContext = nil
 
         let surfaceToFree = surface
+        if let surfaceToFree {
+            TerminalSurfaceRegistry.shared.unregisterRuntimeSurface(surfaceToFree, ownerId: id)
+        }
         surface = nil
 
         guard let surfaceToFree else {
             callbackContext?.release()
             return
         }
+
+#if DEBUG
+        if runtimeSurfaceFreedOutOfBandForTesting {
+            runtimeSurfaceFreedOutOfBandForTesting = false
+            callbackContext?.release()
+            return
+        }
+#endif
 
         Task { @MainActor in
             // Keep free behavior aligned with deinit: perform the runtime teardown on
@@ -2797,7 +3876,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
         }
     }
 
-    #if DEBUG
+#if DEBUG
     private static let surfaceLogPath = "/tmp/cmux-ghostty-surface.log"
     private static let sizeLogPath = "/tmp/cmux-ghostty-size.log"
 
@@ -2805,12 +3884,16 @@ final class TerminalSurface: Identifiable, ObservableObject {
         (lastPixelWidth, lastPixelHeight)
     }
 
+    func debugDesiredFocusState() -> Bool {
+        desiredFocusState
+    }
+
     private static func surfaceLog(_ message: String) {
         let timestamp = ISO8601DateFormatter().string(from: Date())
         let line = "[\(timestamp)] \(message)\n"
         if let handle = FileHandle(forWritingAtPath: surfaceLogPath) {
             handle.seekToEndOfFile()
-            handle.write(line.data(using: .utf8)!)
+            handle.write(Data(line.utf8))
             handle.closeFile()
         } else {
             FileManager.default.createFile(atPath: surfaceLogPath, contents: line.data(using: .utf8))
@@ -2824,7 +3907,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
         let line = "[\(timestamp)] \(message)\n"
         if let handle = FileHandle(forWritingAtPath: sizeLogPath) {
             handle.seekToEndOfFile()
-            handle.write(line.data(using: .utf8)!)
+            handle.write(Data(line.utf8))
             handle.closeFile()
         } else {
             FileManager.default.createFile(atPath: sizeLogPath, contents: line.data(using: .utf8))
@@ -2902,6 +3985,15 @@ final class TerminalSurface: Identifiable, ObservableObject {
         // If surface doesn't exist yet, create it once the view is in a real window so
         // content scale and pixel geometry are derived from the actual backing context.
         if surface == nil {
+            guard allowsRuntimeSurfaceCreation() else {
+#if DEBUG
+                dlog(
+                    "surface.attach.skip surface=\(id.uuidString.prefix(5)) " +
+                    "reason=lifecycle.\(portalLifecycleState.rawValue)"
+                )
+#endif
+                return
+            }
             guard view.window != nil else {
 #if DEBUG
                 dlog(
@@ -2931,6 +4023,18 @@ final class TerminalSurface: Identifiable, ObservableObject {
     }
 
     private func createSurface(for view: GhosttyNSView) {
+        guard allowsRuntimeSurfaceCreation() else {
+#if DEBUG
+            dlog(
+                "surface.create.skip surface=\(id.uuidString.prefix(5)) " +
+                "reason=lifecycle.\(portalLifecycleState.rawValue)"
+            )
+            Self.surfaceLog(
+                "createSurface SKIPPED surface=\(id.uuidString) tab=\(tabId.uuidString) lifecycle=\(portalLifecycleState.rawValue)"
+            )
+#endif
+            return
+        }
         #if DEBUG
         let resourcesDir = getenv("GHOSTTY_RESOURCES_DIR").flatMap { String(cString: $0) } ?? "(unset)"
         let terminfo = getenv("TERMINFO").flatMap { String(cString: $0) } ?? "(unset)"
@@ -2949,7 +4053,10 @@ final class TerminalSurface: Identifiable, ObservableObject {
 
         let scaleFactors = scaleFactors(for: view)
 
-        var surfaceConfig = configTemplate ?? ghostty_surface_config_new()
+        let baseConfig = configTemplate ?? CmuxSurfaceConfigTemplate()
+        var surfaceConfig = ghostty_surface_config_new()
+        surfaceConfig.font_size = baseConfig.fontSize
+        surfaceConfig.wait_after_command = baseConfig.waitAfterCommand
         surfaceConfig.platform_tag = GHOSTTY_PLATFORM_MACOS
         surfaceConfig.platform = ghostty_platform_u(macos: ghostty_platform_macos_s(
             nsview: Unmanaged.passUnretained(view).toOpaque()
@@ -2976,41 +4083,49 @@ final class TerminalSurface: Identifiable, ObservableObject {
             }
         }
 
-        var env: [String: String] = [:]
-        if surfaceConfig.env_var_count > 0, let existingEnv = surfaceConfig.env_vars {
-            let count = Int(surfaceConfig.env_var_count)
-            if count > 0 {
-                for i in 0..<count {
-                    let item = existingEnv[i]
-                    if let key = String(cString: item.key, encoding: .utf8),
-                       let value = String(cString: item.value, encoding: .utf8) {
-                        env[key] = value
-                    }
-                }
-            }
+        var env = baseConfig.environmentVariables
+
+        var protectedStartupEnvironmentKeys: Set<String> = []
+        Self.applyManagedTerminalIdentityEnvironment(
+            to: &env,
+            protectedKeys: &protectedStartupEnvironmentKeys
+        )
+        func setManagedEnvironmentValue(_ key: String, _ value: String) {
+            env[key] = value
+            protectedStartupEnvironmentKeys.insert(key)
         }
 
-        env["CMUX_SURFACE_ID"] = id.uuidString
-        env["CMUX_WORKSPACE_ID"] = tabId.uuidString
+        setManagedEnvironmentValue("CMUX_SURFACE_ID", id.uuidString)
+        setManagedEnvironmentValue("CMUX_WORKSPACE_ID", tabId.uuidString)
         // Backward-compatible shell integration keys used by existing scripts/tests.
-        env["CMUX_PANEL_ID"] = id.uuidString
-        env["CMUX_TAB_ID"] = tabId.uuidString
-        env["CMUX_SOCKET_PATH"] = SocketControlSettings.socketPath()
+        setManagedEnvironmentValue("CMUX_PANEL_ID", id.uuidString)
+        setManagedEnvironmentValue("CMUX_TAB_ID", tabId.uuidString)
+        let socketPath = SocketControlSettings.socketPath()
+        setManagedEnvironmentValue("CMUX_SOCKET_PATH", socketPath)
+        // Backward-compatible alias expected by older scripts and third-party integrations.
+        setManagedEnvironmentValue("CMUX_SOCKET", socketPath)
+        if let bundledCLIURL = Bundle.main.resourceURL?.appendingPathComponent("bin/cmux"),
+           FileManager.default.isExecutableFile(atPath: bundledCLIURL.path) {
+            setManagedEnvironmentValue("CMUX_BUNDLED_CLI_PATH", bundledCLIURL.path)
+        }
         if let bundleId = Bundle.main.bundleIdentifier, !bundleId.isEmpty {
-            env["CMUX_BUNDLE_ID"] = bundleId
+            setManagedEnvironmentValue("CMUX_BUNDLE_ID", bundleId)
         }
 
         // Port range for this workspace (base/range snapshotted once per app session)
         do {
             let startPort = Self.sessionPortBase + portOrdinal * Self.sessionPortRangeSize
-            env["CMUX_PORT"] = String(startPort)
-            env["CMUX_PORT_END"] = String(startPort + Self.sessionPortRangeSize - 1)
-            env["CMUX_PORT_RANGE"] = String(Self.sessionPortRangeSize)
+            setManagedEnvironmentValue("CMUX_PORT", String(startPort))
+            setManagedEnvironmentValue("CMUX_PORT_END", String(startPort + Self.sessionPortRangeSize - 1))
+            setManagedEnvironmentValue("CMUX_PORT_RANGE", String(Self.sessionPortRangeSize))
         }
 
         let claudeHooksEnabled = ClaudeCodeIntegrationSettings.hooksEnabled()
         if !claudeHooksEnabled {
-            env["CMUX_CLAUDE_HOOKS_DISABLED"] = "1"
+            setManagedEnvironmentValue("CMUX_CLAUDE_HOOKS_DISABLED", "1")
+        }
+        if let customClaudePath = ClaudeCodeIntegrationSettings.customClaudePath() {
+            setManagedEnvironmentValue("CMUX_CUSTOM_CLAUDE_PATH", customClaudePath)
         }
 
         if let cliBinPath = Bundle.main.resourceURL?.appendingPathComponent("bin").path {
@@ -3020,7 +4135,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
                 ?? ""
             if !currentPath.split(separator: ":").contains(Substring(cliBinPath)) {
                 let separator = currentPath.isEmpty ? "" : ":"
-                env["PATH"] = "\(cliBinPath)\(separator)\(currentPath)"
+                setManagedEnvironmentValue("PATH", "\(cliBinPath)\(separator)\(currentPath)")
             }
         }
 
@@ -3028,8 +4143,8 @@ final class TerminalSurface: Identifiable, ObservableObject {
         let shellIntegrationEnabled = UserDefaults.standard.object(forKey: "sidebarShellIntegration") as? Bool ?? true
         if shellIntegrationEnabled,
            let integrationDir = Bundle.main.resourceURL?.appendingPathComponent("shell-integration").path {
-            env["CMUX_SHELL_INTEGRATION"] = "1"
-            env["CMUX_SHELL_INTEGRATION_DIR"] = integrationDir
+            setManagedEnvironmentValue("CMUX_SHELL_INTEGRATION", "1")
+            setManagedEnvironmentValue("CMUX_SHELL_INTEGRATION_DIR", integrationDir)
 
             let shell = (env["SHELL"]?.isEmpty == false ? env["SHELL"] : nil)
                 ?? getenv("SHELL").map { String(cString: $0) }
@@ -3038,7 +4153,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
             let shellName = URL(fileURLWithPath: shell).lastPathComponent
             if shellName == "zsh" {
                 if GhosttyApp.shared.shellIntegrationMode() != "none" {
-                    env["CMUX_LOAD_GHOSTTY_ZSH_INTEGRATION"] = "1"
+                    setManagedEnvironmentValue("CMUX_LOAD_GHOSTTY_ZSH_INTEGRATION", "1")
                 }
                 let candidateZdotdir = (env["ZDOTDIR"]?.isEmpty == false ? env["ZDOTDIR"] : nil)
                     ?? getenv("ZDOTDIR").map { String(cString: $0) }
@@ -3055,20 +4170,20 @@ final class TerminalSurface: Identifiable, ObservableObject {
                         isGhosttyInjected = (candidateZdotdir == ghosttyZdotdir)
                     }
                     if !isGhosttyInjected {
-                        env["CMUX_ZSH_ZDOTDIR"] = candidateZdotdir
+                        setManagedEnvironmentValue("CMUX_ZSH_ZDOTDIR", candidateZdotdir)
                     }
                 }
 
-                env["ZDOTDIR"] = integrationDir
+                setManagedEnvironmentValue("ZDOTDIR", integrationDir)
             } else if shellName == "bash" {
                 if GhosttyApp.shared.shellIntegrationMode() != "none" {
-                    env["CMUX_LOAD_GHOSTTY_BASH_INTEGRATION"] = "1"
+                    setManagedEnvironmentValue("CMUX_LOAD_GHOSTTY_BASH_INTEGRATION", "1")
                 }
                 // macOS ships /bin/bash 3.2, where Ghostty's automatic bash
                 // integration is unsupported and HOME-based wrapper startup is
                 // not reliable. Bootstrap cmux bash integration on the first
                 // interactive prompt instead.
-                env["PROMPT_COMMAND"] = """
+                setManagedEnvironmentValue("PROMPT_COMMAND", """
                 unset PROMPT_COMMAND; \
                 if [[ "${CMUX_LOAD_GHOSTTY_BASH_INTEGRATION:-0}" == "1" && -n "${GHOSTTY_RESOURCES_DIR:-}" ]]; then \
                 _cmux_ghostty_bash="$GHOSTTY_RESOURCES_DIR/shell-integration/bash/ghostty.bash"; \
@@ -3080,16 +4195,15 @@ final class TerminalSurface: Identifiable, ObservableObject {
                 fi; \
                 unset _cmux_ghostty_bash _cmux_bash_integration; \
                 if declare -F _cmux_prompt_command >/dev/null 2>&1; then _cmux_prompt_command; fi
-                """
+                """)
             }
         }
-
-        let startupEnvironment = additionalEnvironment
-        if !startupEnvironment.isEmpty {
-            for (key, value) in startupEnvironment where !key.isEmpty && !value.isEmpty {
-                env[key] = value
-            }
-        }
+        env = Self.mergedStartupEnvironment(
+            base: env,
+            protectedKeys: protectedStartupEnvironmentKeys,
+            additionalEnvironment: additionalEnvironment,
+            initialEnvironmentOverrides: initialEnvironmentOverrides
+        )
 
         if !env.isEmpty {
             envVars.reserveCapacity(env.count)
@@ -3114,14 +4228,40 @@ final class TerminalSurface: Identifiable, ObservableObject {
             }
         }
 
-        if let workingDirectory, !workingDirectory.isEmpty {
-            workingDirectory.withCString { cWorkingDir in
-                surfaceConfig.working_directory = cWorkingDir
-                createSurface()
+        let resolvedWorkingDirectory: String? = {
+            if let workingDirectory, !workingDirectory.isEmpty {
+                return workingDirectory
             }
-        } else {
-            createSurface()
+            return baseConfig.workingDirectory
+        }()
+        let resolvedCommand: String? = {
+            if let initialCommand, !initialCommand.isEmpty {
+                return initialCommand
+            }
+            return baseConfig.command
+        }()
+        let resolvedInitialInput = baseConfig.initialInput
+        func withOptionalCString<T>(_ value: String?, _ body: (UnsafePointer<CChar>?) -> T) -> T {
+            guard let value else {
+                return body(nil)
+            }
+            return value.withCString(body)
         }
+
+        let createWithCommandAndWorkingDirectory = {
+            withOptionalCString(resolvedCommand) { cCommand in
+                surfaceConfig.command = cCommand
+                withOptionalCString(resolvedWorkingDirectory) { cWorkingDir in
+                    surfaceConfig.working_directory = cWorkingDir
+                    withOptionalCString(resolvedInitialInput) { cInitialInput in
+                        surfaceConfig.initial_input = cInitialInput
+                        createSurface()
+                    }
+                }
+            }
+        }
+
+        createWithCommandAndWorkingDirectory()
 
         if surface == nil {
             surfaceCallbackContext?.release()
@@ -3144,6 +4284,8 @@ final class TerminalSurface: Identifiable, ObservableObject {
             return
         }
         guard let createdSurface = surface else { return }
+        TerminalSurfaceRegistry.shared.registerRuntimeSurface(createdSurface, ownerId: id)
+        recordRuntimeSurfaceCreation()
 
         // Session scrollback replay must be one-shot. Reusing it on a later runtime
         // surface recreation would inject stale restored output into a live shell.
@@ -3178,7 +4320,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
         // config/scale reconciliation. If runtime points don't match the inherited
         // template points, re-apply via binding action so all creation paths
         // (new surface, split, new workspace) preserve zoom from the source terminal.
-        if let inheritedFontPoints = configTemplate?.font_size,
+        if let inheritedFontPoints = configTemplate?.fontSize,
            inheritedFontPoints > 0 {
             let currentFontPoints = cmuxCurrentSurfaceFontSizePoints(createdSurface)
             let shouldReapply = {
@@ -3191,13 +4333,27 @@ final class TerminalSurface: Identifiable, ObservableObject {
             }
         }
 
-        flushPendingTextIfNeeded()
+        // Re-apply the desired focus state after creation so the live runtime
+        // surface converges with any focus changes that happened while the
+        // surface was being initialized.
+        ghostty_surface_set_focus(createdSurface, desiredFocusState)
+
+        flushPendingSocketInputIfNeeded()
 
         // Kick an initial draw after creation/size setup. On some startup paths Ghostty can
         // miss the first vsync callback and sit on a blank frame until another focus/visibility
         // transition nudges the renderer.
         view.forceRefreshSurface()
         ghostty_surface_refresh(createdSurface)
+
+        NotificationCenter.default.post(
+            name: .terminalSurfaceDidBecomeReady,
+            object: self,
+            userInfo: [
+                "surfaceId": id,
+                "workspaceId": tabId
+            ]
+        )
 
 #if DEBUG
         let runtimeFontText = cmuxCurrentSurfaceFontSizePoints(createdSurface).map {
@@ -3276,6 +4432,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
         dlog("forceRefresh: \(id) reason=\(reason) \(viewState)")
         #endif
         guard let view = attachedView,
+              let surface,
               view.window != nil,
               view.bounds.width > 0,
               view.bounds.height > 0 else {
@@ -3305,7 +4462,20 @@ final class TerminalSurface: Identifiable, ObservableObject {
         surfaceView.applyWindowBackgroundIfActive()
     }
 
+    /// Keep `desiredFocusState` in sync when the hosted view's responder chain
+    /// calls `ghostty_surface_set_focus` directly (bypassing `setFocus`).
+    /// Without this, `createSurface` would replay a stale state on recreation.
+    func recordExternalFocusState(_ focused: Bool) {
+        desiredFocusState = focused
+    }
+
     func setFocus(_ focused: Bool) {
+        // Only send focus events when the state changes to avoid redundant
+        // prompt redraws with zsh themes like Powerlevel10k.
+        guard focused != desiredFocusState else { return }
+        desiredFocusState = focused
+        // Track desired state even before the C surface exists (e.g. during
+        // layout restoration). createSurface syncs the state once created.
         guard let surface = surface else { return }
         ghostty_surface_set_focus(surface, focused)
 
@@ -3346,27 +4516,15 @@ final class TerminalSurface: Identifiable, ObservableObject {
     func sendText(_ text: String) {
         guard let data = text.data(using: .utf8), !data.isEmpty else { return }
         guard let surface = surface else {
-            enqueuePendingText(data)
+            enqueuePendingSocketInput(.text(data))
+            requestBackgroundSurfaceStartIfNeeded()
             return
         }
         writeTextData(data, to: surface)
     }
 
     /// [TextBox] Send a synthetic key event through AppKit, simulating a physical
-    /// key press. Creates an `NSEvent.keyDown` and delivers it via
-    /// `view.keyDown(with:)`, going through AppKit's full key handling path
-    /// (which internally routes to `ghostty_surface_key`).
-    ///
-    /// **Why synthetic NSEvent via `view.keyDown` instead of calling
-    /// `ghostty_surface_key` directly?**
-    /// Going through AppKit's standard key handling ensures the correct
-    /// event context (window, focus state, modifier flags) is set up.
-    /// Calling the C API directly bypasses this and can produce unreliable
-    /// results depending on focus state.
-    ///
-    /// **Why keyDown only (no keyUp)?**
-    /// Sending both keyDown + keyUp produces `^^` garbage characters in the
-    /// terminal output. keyDown alone is sufficient for key recognition.
+    /// key press. Goes through AppKit's full key handling path.
     func sendSyntheticKey(characters: String, keyCode: UInt16, modifiers: NSEvent.ModifierFlags = []) {
         guard let view = attachedView, let window = view.window else { return }
         if let keyDown = NSEvent.keyEvent(
@@ -3386,24 +4544,93 @@ final class TerminalSurface: Identifiable, ObservableObject {
     }
 
     // [TextBox] Send a named key to the terminal via synthetic NSEvent.
-    //
-    // Why synthetic events instead of `forwardKeyEvent(rawEvent)`?
-    // Forwarding raw NSEvents via `view.keyDown(with:)` produces `^^`
-    // garbage characters. By routing through `doCommandBySelector` in
-    // InputTextView → coordinator → this synthetic key method, we go
-    // through AppKit's standard key interpretation path, which avoids
-    // the garbage character issue.
-
     func sendKey(_ key: TextBoxKeyRouting.TerminalKey) {
         sendSyntheticKey(characters: key.characters, keyCode: key.keyCode)
     }
 
     /// [TextBox] Forward an NSEvent directly to the terminal view.
-    /// Used only for Ctrl+key combinations, which are already proper
-    /// NSEvents from the system and don't produce garbage characters.
     func forwardKeyEvent(_ event: NSEvent) {
         guard let view = attachedView else { return }
         view.keyDown(with: event)
+    }
+
+    @discardableResult
+    func sendNamedKey(_ keyName: String) -> Bool {
+        guard let event = pendingKeyEvent(for: keyName) else { return false }
+        if let surface = surface {
+            sendKeyEvent(surface: surface, keycode: event.keycode, mods: event.mods)
+        } else {
+            enqueuePendingSocketInput(.key(event))
+            requestBackgroundSurfaceStartIfNeeded()
+        }
+        return true
+    }
+
+    /// Send text with control characters (Return, Tab, etc.) delivered as key
+    /// events so the shell processes them, while regular text is sent via the
+    /// normal key-text path.  Mirrors `TerminalController.sendSocketText`.
+    func sendInput(_ text: String) {
+        guard let surface = surface else { return }
+        var bufferedText = ""
+        var previousWasCR = false
+        for scalar in text.unicodeScalars {
+            switch scalar.value {
+            case 0x0A: // \n — skip if preceded by \r (already sent Return)
+                if !previousWasCR {
+                    flushText(&bufferedText, surface: surface)
+                    sendKeyEvent(surface: surface, keycode: 0x24) // kVK_Return
+                }
+                previousWasCR = false
+            case 0x0D:
+                flushText(&bufferedText, surface: surface)
+                sendKeyEvent(surface: surface, keycode: 0x24) // kVK_Return
+                previousWasCR = true
+            case 0x09:
+                flushText(&bufferedText, surface: surface)
+                sendKeyEvent(surface: surface, keycode: 0x30) // kVK_Tab
+                previousWasCR = false
+            case 0x1B:
+                flushText(&bufferedText, surface: surface)
+                sendKeyEvent(surface: surface, keycode: 0x35) // kVK_Escape
+                previousWasCR = false
+            default:
+                bufferedText.unicodeScalars.append(scalar)
+                previousWasCR = false
+            }
+        }
+        flushText(&bufferedText, surface: surface)
+    }
+
+    private func flushText(_ buffer: inout String, surface: ghostty_surface_t) {
+        guard !buffer.isEmpty else { return }
+        var keyEvent = ghostty_input_key_s()
+        keyEvent.action = GHOSTTY_ACTION_PRESS
+        keyEvent.keycode = 0
+        keyEvent.mods = GHOSTTY_MODS_NONE
+        keyEvent.consumed_mods = GHOSTTY_MODS_NONE
+        keyEvent.unshifted_codepoint = 0
+        keyEvent.composing = false
+        buffer.withCString { ptr in
+            keyEvent.text = ptr
+            _ = ghostty_surface_key(surface, keyEvent)
+        }
+        buffer.removeAll(keepingCapacity: true)
+    }
+
+    private func sendKeyEvent(
+        surface: ghostty_surface_t,
+        keycode: UInt32,
+        mods: ghostty_input_mods_e = GHOSTTY_MODS_NONE
+    ) {
+        var keyEvent = ghostty_input_key_s()
+        keyEvent.action = GHOSTTY_ACTION_PRESS
+        keyEvent.keycode = keycode
+        keyEvent.mods = mods
+        keyEvent.consumed_mods = GHOSTTY_MODS_NONE
+        keyEvent.unshifted_codepoint = 0
+        keyEvent.composing = false
+        keyEvent.text = nil
+        _ = ghostty_surface_key(surface, keyEvent)
     }
 
     func requestBackgroundSurfaceStartIfNeeded() {
@@ -3414,6 +4641,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
             return
         }
 
+        guard allowsRuntimeSurfaceCreation() else { return }
         guard surface == nil, attachedView != nil else { return }
         guard !backgroundSurfaceStartQueued else { return }
         backgroundSurfaceStartQueued = true
@@ -3421,6 +4649,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.backgroundSurfaceStartQueued = false
+            guard self.allowsRuntimeSurfaceCreation() else { return }
             guard self.surface == nil, let view = self.attachedView else { return }
             #if DEBUG
             let startedAt = ProcessInfo.processInfo.systemUptime
@@ -3442,37 +4671,188 @@ final class TerminalSurface: Identifiable, ObservableObject {
         }
     }
 
-    private func enqueuePendingText(_ data: Data) {
-        let incomingBytes = data.count
-        while !pendingTextQueue.isEmpty && pendingTextBytes + incomingBytes > maxPendingTextBytes {
-            let dropped = pendingTextQueue.removeFirst()
-            pendingTextBytes -= dropped.count
+    private func keycodeForLetter(_ letter: Character) -> UInt32? {
+        switch String(letter).lowercased() {
+        case "a": return UInt32(kVK_ANSI_A)
+        case "b": return UInt32(kVK_ANSI_B)
+        case "c": return UInt32(kVK_ANSI_C)
+        case "d": return UInt32(kVK_ANSI_D)
+        case "e": return UInt32(kVK_ANSI_E)
+        case "f": return UInt32(kVK_ANSI_F)
+        case "g": return UInt32(kVK_ANSI_G)
+        case "h": return UInt32(kVK_ANSI_H)
+        case "i": return UInt32(kVK_ANSI_I)
+        case "j": return UInt32(kVK_ANSI_J)
+        case "k": return UInt32(kVK_ANSI_K)
+        case "l": return UInt32(kVK_ANSI_L)
+        case "m": return UInt32(kVK_ANSI_M)
+        case "n": return UInt32(kVK_ANSI_N)
+        case "o": return UInt32(kVK_ANSI_O)
+        case "p": return UInt32(kVK_ANSI_P)
+        case "q": return UInt32(kVK_ANSI_Q)
+        case "r": return UInt32(kVK_ANSI_R)
+        case "s": return UInt32(kVK_ANSI_S)
+        case "t": return UInt32(kVK_ANSI_T)
+        case "u": return UInt32(kVK_ANSI_U)
+        case "v": return UInt32(kVK_ANSI_V)
+        case "w": return UInt32(kVK_ANSI_W)
+        case "x": return UInt32(kVK_ANSI_X)
+        case "y": return UInt32(kVK_ANSI_Y)
+        case "z": return UInt32(kVK_ANSI_Z)
+        default: return nil
         }
-
-        pendingTextQueue.append(data)
-        pendingTextBytes += incomingBytes
-        #if DEBUG
-        dlog(
-            "surface.send_text.queue surface=\(id.uuidString.prefix(8)) chunks=\(pendingTextQueue.count) bytes=\(pendingTextBytes)"
-        )
-        #endif
     }
 
-    private func flushPendingTextIfNeeded() {
-        guard let surface = surface, !pendingTextQueue.isEmpty else { return }
-        let queued = pendingTextQueue
-        let queuedBytes = pendingTextBytes
-        pendingTextQueue.removeAll(keepingCapacity: false)
-        pendingTextBytes = 0
-
-        for chunk in queued {
-            writeTextData(chunk, to: surface)
+    private func keycodeForNamedKey(_ name: String) -> UInt32? {
+        switch name {
+        case "enter", "return": return UInt32(kVK_Return)
+        case "tab": return UInt32(kVK_Tab)
+        case "escape", "esc": return UInt32(kVK_Escape)
+        case "backspace": return UInt32(kVK_Delete)
+        case "delete": return UInt32(kVK_ForwardDelete)
+        case "space": return UInt32(kVK_Space)
+        case "up": return UInt32(kVK_UpArrow)
+        case "down": return UInt32(kVK_DownArrow)
+        case "left": return UInt32(kVK_LeftArrow)
+        case "right": return UInt32(kVK_RightArrow)
+        case "\\": return UInt32(kVK_ANSI_Backslash)
+        default: return nil
         }
-        #if DEBUG
+    }
+
+    private func pendingKeyEvent(for keyName: String) -> PendingKeyEvent? {
+        let normalized = keyName.lowercased()
+        switch normalized {
+        case "ctrl-c", "ctrl+c", "sigint":
+            return PendingKeyEvent(keycode: UInt32(kVK_ANSI_C), mods: GHOSTTY_MODS_CTRL, label: normalized)
+        case "ctrl-d", "ctrl+d", "eof":
+            return PendingKeyEvent(keycode: UInt32(kVK_ANSI_D), mods: GHOSTTY_MODS_CTRL, label: normalized)
+        case "ctrl-z", "ctrl+z", "sigtstp":
+            return PendingKeyEvent(keycode: UInt32(kVK_ANSI_Z), mods: GHOSTTY_MODS_CTRL, label: normalized)
+        case "ctrl-\\", "ctrl+\\", "sigquit":
+            return PendingKeyEvent(keycode: UInt32(kVK_ANSI_Backslash), mods: GHOSTTY_MODS_CTRL, label: normalized)
+        case "enter", "return":
+            return PendingKeyEvent(keycode: UInt32(kVK_Return), mods: GHOSTTY_MODS_NONE, label: normalized)
+        case "tab":
+            return PendingKeyEvent(keycode: UInt32(kVK_Tab), mods: GHOSTTY_MODS_NONE, label: normalized)
+        case "escape", "esc":
+            return PendingKeyEvent(keycode: UInt32(kVK_Escape), mods: GHOSTTY_MODS_NONE, label: normalized)
+        case "backspace":
+            return PendingKeyEvent(keycode: UInt32(kVK_Delete), mods: GHOSTTY_MODS_NONE, label: normalized)
+        case "up", "arrow_up", "arrowup":
+            return PendingKeyEvent(keycode: UInt32(kVK_UpArrow), mods: GHOSTTY_MODS_NONE, label: normalized)
+        case "down", "arrow_down", "arrowdown":
+            return PendingKeyEvent(keycode: UInt32(kVK_DownArrow), mods: GHOSTTY_MODS_NONE, label: normalized)
+        case "left", "arrow_left", "arrowleft":
+            return PendingKeyEvent(keycode: UInt32(kVK_LeftArrow), mods: GHOSTTY_MODS_NONE, label: normalized)
+        case "right", "arrow_right", "arrowright":
+            return PendingKeyEvent(keycode: UInt32(kVK_RightArrow), mods: GHOSTTY_MODS_NONE, label: normalized)
+        case "shift+tab", "shift-tab", "backtab":
+            return PendingKeyEvent(keycode: UInt32(kVK_Tab), mods: GHOSTTY_MODS_SHIFT, label: normalized)
+        case "home":
+            return PendingKeyEvent(keycode: UInt32(kVK_Home), mods: GHOSTTY_MODS_NONE, label: normalized)
+        case "end":
+            return PendingKeyEvent(keycode: UInt32(kVK_End), mods: GHOSTTY_MODS_NONE, label: normalized)
+        case "delete", "del", "forward_delete":
+            return PendingKeyEvent(keycode: UInt32(kVK_ForwardDelete), mods: GHOSTTY_MODS_NONE, label: normalized)
+        case "pageup", "page_up":
+            return PendingKeyEvent(keycode: UInt32(kVK_PageUp), mods: GHOSTTY_MODS_NONE, label: normalized)
+        case "pagedown", "page_down":
+            return PendingKeyEvent(keycode: UInt32(kVK_PageDown), mods: GHOSTTY_MODS_NONE, label: normalized)
+        default:
+            let parts = normalized
+                .split(separator: "+")
+                .flatMap { $0.split(separator: "-") }
+                .map(String.init)
+                .filter { !$0.isEmpty }
+            guard let baseKey = parts.last else { return nil }
+
+            if parts.count == 1 {
+                if let keycode = keycodeForNamedKey(baseKey) {
+                    return PendingKeyEvent(keycode: keycode, mods: GHOSTTY_MODS_NONE, label: normalized)
+                }
+                if baseKey.count == 1,
+                   let char = baseKey.first,
+                   let keycode = keycodeForLetter(char) {
+                    return PendingKeyEvent(keycode: keycode, mods: GHOSTTY_MODS_NONE, label: normalized)
+                }
+                return nil
+            }
+
+            var mods = GHOSTTY_MODS_NONE
+            for mod in parts.dropLast() {
+                switch mod {
+                case "ctrl", "control":
+                    mods = ghostty_input_mods_e(rawValue: mods.rawValue | GHOSTTY_MODS_CTRL.rawValue)
+                case "shift":
+                    mods = ghostty_input_mods_e(rawValue: mods.rawValue | GHOSTTY_MODS_SHIFT.rawValue)
+                case "alt", "opt", "option":
+                    mods = ghostty_input_mods_e(rawValue: mods.rawValue | GHOSTTY_MODS_ALT.rawValue)
+                case "cmd", "command", "super":
+                    mods = ghostty_input_mods_e(rawValue: mods.rawValue | GHOSTTY_MODS_SUPER.rawValue)
+                default:
+                    return nil
+                }
+            }
+
+            if let keycode = keycodeForNamedKey(baseKey) {
+                return PendingKeyEvent(keycode: keycode, mods: mods, label: normalized)
+            }
+            if baseKey.count == 1,
+               let char = baseKey.first,
+               let keycode = keycodeForLetter(char) {
+                return PendingKeyEvent(keycode: keycode, mods: mods, label: normalized)
+            }
+            return nil
+        }
+    }
+
+    private func enqueuePendingSocketInput(_ input: PendingSocketInput) {
+        let incomingBytes = input.estimatedBytes
+        while !pendingSocketInputQueue.isEmpty,
+              pendingSocketInputBytes + incomingBytes > maxPendingSocketInputBytes {
+            let dropped = pendingSocketInputQueue.removeFirst()
+            pendingSocketInputBytes -= dropped.estimatedBytes
+        }
+
+        pendingSocketInputQueue.append(input)
+        pendingSocketInputBytes += incomingBytes
+#if DEBUG
+        let pendingKeys = pendingSocketInputQueue.reduce(into: 0) { count, item in
+            if case .key = item {
+                count += 1
+            }
+        }
         dlog(
-            "surface.send_text.flush surface=\(id.uuidString.prefix(8)) chunks=\(queued.count) bytes=\(queuedBytes)"
+            "surface.socket_input.queue surface=\(id.uuidString.prefix(8)) items=\(pendingSocketInputQueue.count) " +
+            "keys=\(pendingKeys) bytes=\(pendingSocketInputBytes)"
         )
-        #endif
+#endif
+    }
+
+    private func flushPendingSocketInputIfNeeded() {
+        guard let surface = surface, !pendingSocketInputQueue.isEmpty else { return }
+        let queued = pendingSocketInputQueue
+        let queuedBytes = pendingSocketInputBytes
+        pendingSocketInputQueue.removeAll(keepingCapacity: false)
+        pendingSocketInputBytes = 0
+
+        var queuedKeys = 0
+        for item in queued {
+            switch item {
+            case .text(let chunk):
+                writeTextData(chunk, to: surface)
+            case .key(let event):
+                queuedKeys += 1
+                sendKeyEvent(surface: surface, keycode: event.keycode, mods: event.mods)
+            }
+        }
+#if DEBUG
+        dlog(
+            "surface.socket_input.flush surface=\(id.uuidString.prefix(8)) items=\(queued.count) " +
+            "keys=\(queuedKeys) bytes=\(queuedBytes)"
+        )
+#endif
     }
 
     func performBindingAction(_ action: String) -> Bool {
@@ -3543,8 +4923,29 @@ final class TerminalSurface: Identifiable, ObservableObject {
             return
         }
 
+        TerminalSurfaceRegistry.shared.unregisterRuntimeSurface(surfaceToFree, ownerId: id)
         surface = nil
         ghostty_surface_free(surfaceToFree)
+        callbackContext?.release()
+    }
+
+    /// Test-only helper to simulate a stale Swift wrapper whose native surface
+    /// was already freed out-of-band.
+    @MainActor
+    func replaceSurfaceWithFreedPointerForTesting() {
+        guard !runtimeSurfaceFreedOutOfBandForTesting else { return }
+
+        let callbackContext = surfaceCallbackContext
+        surfaceCallbackContext = nil
+
+        guard let surfaceToFree = surface else {
+            callbackContext?.release()
+            return
+        }
+
+        TerminalSurfaceRegistry.shared.unregisterRuntimeSurface(surfaceToFree, ownerId: id)
+        ghostty_surface_free(surfaceToFree)
+        runtimeSurfaceFreedOutOfBandForTesting = true
         callbackContext?.release()
     }
 #endif
@@ -3560,6 +4961,9 @@ final class TerminalSurface: Identifiable, ObservableObject {
         // before this object is fully deallocated will see nil and bail out,
         // rather than passing a freed pointer to ghostty_surface_refresh (#432).
         let surfaceToFree = surface
+        if let surfaceToFree {
+            TerminalSurfaceRegistry.shared.unregisterRuntimeSurface(surfaceToFree, ownerId: id)
+        }
         surface = nil
 
         guard let surfaceToFree else {
@@ -3572,6 +4976,14 @@ final class TerminalSurface: Identifiable, ObservableObject {
             callbackContext?.release()
             return
         }
+
+#if DEBUG
+        if runtimeSurfaceFreedOutOfBandForTesting {
+            runtimeSurfaceFreedOutOfBandForTesting = false
+            callbackContext?.release()
+            return
+        }
+#endif
 
 #if DEBUG
         let surfaceToken = String(id.uuidString.prefix(5))
@@ -3599,6 +5011,13 @@ final class TerminalSurface: Identifiable, ObservableObject {
     }
 }
 
+extension TerminalSurface {
+    @MainActor
+    func owningWorkspace() -> Workspace? {
+        AppDelegate.shared?.workspaceFor(tabId: tabId)
+    }
+}
+
 // MARK: - Ghostty Surface View
 
 class GhosttyNSView: NSView, NSUserInterfaceValidations {
@@ -3608,14 +5027,48 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         }
         return UserDefaults.standard.bool(forKey: "cmuxFocusDebug")
     }()
+    internal enum DropPlan: Equatable {
+        case insertText(String)
+        case uploadFiles([URL])
+        case reject
+    }
+
     private static let dropTypes: Set<NSPasteboard.PasteboardType> = [
         .string,
         .fileURL,
-        .URL
+        .URL,
+        .png,
+        .tiff,
+        NSPasteboard.PasteboardType(UTType.jpeg.identifier),
+        NSPasteboard.PasteboardType(UTType.gif.identifier),
+        NSPasteboard.PasteboardType(UTType.heic.identifier),
+        NSPasteboard.PasteboardType(UTType.heif.identifier)
     ]
     private static let tabTransferPasteboardType = NSPasteboard.PasteboardType("com.splittabbar.tabtransfer")
     private static let sidebarTabReorderPasteboardType = NSPasteboard.PasteboardType("com.cmux.sidebar-tab-reorder")
-    private static let shellEscapeCharacters = "\\ ()[]{}<>\"'`!#$&;|*?\t"
+
+    private enum WordPathResolutionSource: String {
+        case quicklook
+        case snapshot
+    }
+
+    private struct WordPathResolution {
+        let path: String
+        let source: WordPathResolutionSource
+        let rawToken: String
+    }
+
+    private func makeWordPathResolution(
+        path: String,
+        source: WordPathResolutionSource,
+        rawToken: String
+    ) -> WordPathResolution {
+        WordPathResolution(
+            path: path,
+            source: source,
+            rawToken: rawToken
+        )
+    }
 
     fileprivate static func focusLog(_ message: String) {
         guard focusDebugEnabled else { return }
@@ -3625,7 +5078,52 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
 
     weak var terminalSurface: TerminalSurface?
     var scrollbar: GhosttyScrollbar?
+    /// Pending scrollbar value written from the action callback thread;
+    /// read and cleared on the main thread by `flushPendingScrollbar()`.
+    /// Access is guarded by `_scrollbarLock` because the action callback
+    /// fires on Ghostty's I/O thread while the flush runs on main.
+    private var _pendingScrollbar: GhosttyScrollbar?
+    private var _scrollbarFlushScheduled = false
+    private let _scrollbarLock = NSLock()
     var cellSize: CGSize = .zero
+    private var lastKnownMousePointInView: NSPoint?
+
+    /// Coalesce high-frequency scrollbar updates into a single main-thread
+    /// dispatch.  The action callback (which may fire thousands of times per
+    /// second during bulk output like `seq 1 100000`) stores the latest value
+    /// and schedules exactly one async flush.
+    func enqueueScrollbarUpdate(_ newValue: GhosttyScrollbar) {
+        _scrollbarLock.lock()
+        defer { _scrollbarLock.unlock() }
+        // Store the latest value (always overwrites — only the newest matters).
+        _pendingScrollbar = newValue
+        let needsSchedule = !_scrollbarFlushScheduled
+        if needsSchedule { _scrollbarFlushScheduled = true }
+
+        // If a flush is already scheduled, skip the dispatch — the scheduled
+        // block will pick up the latest value.
+        guard needsSchedule else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.flushPendingScrollbar()
+        }
+    }
+
+    private func flushPendingScrollbar() {
+        _scrollbarLock.lock()
+        _scrollbarFlushScheduled = false
+        let pending = _pendingScrollbar
+        _pendingScrollbar = nil
+        _scrollbarLock.unlock()
+
+        guard let pending else { return }
+        scrollbar = pending
+        NotificationCenter.default.post(
+            name: .ghosttyDidUpdateScrollbar,
+            object: self,
+            userInfo: [GhosttyNotificationKey.scrollbar: pending]
+        )
+    }
+
     var desiredFocus: Bool = false
     var suppressingReparentFocus: Bool = false
     var tabId: UUID?
@@ -3638,6 +5136,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
     private var keySequence: [ghostty_input_trigger_s] = []
     private var keyTables: [String] = []
     fileprivate private(set) var keyboardCopyModeActive = false
+    private var wordPathHoverActive = false
     private var keyboardCopyModeConsumedKeyUps: Set<UInt16> = []
     private var keyboardCopyModeInputState = TerminalKeyboardCopyModeInputState()
     private var keyboardCopyModeViewportRow: Int?
@@ -3702,7 +5201,9 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         return true
     }
 
-        // Visibility is used for focus gating, not for libghostty occlusion.
+        // Visibility is used for focus gating. Explicit portal visibility transitions
+        // also drive Ghostty occlusion so hidden workspace/split surfaces pause and
+        // queue a redraw when they become visible again.
         fileprivate var isVisibleInUI: Bool { visibleInUI }
         fileprivate func setVisibleInUI(_ visible: Bool) {
             visibleInUI = visible
@@ -3716,6 +5217,18 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         setup()
+    }
+
+    override func makeBackingLayer() -> CALayer {
+        let metalLayer = CAMetalLayer()
+        metalLayer.pixelFormat = .bgra8Unorm
+        metalLayer.isOpaque = false
+        // framebufferOnly=false lets the macOS compositor read the drawable
+        // when blending translucent or blurred window layers.  This matches
+        // standalone Ghostty's SurfaceView and is required for background-opacity
+        // and background-blur to render correctly.
+        metalLayer.framebufferOnly = false
+        return metalLayer
     }
 
     private func setup() {
@@ -3735,7 +5248,8 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
     }
 
     func applySurfaceBackground() {
-        let color = effectiveBackgroundColor()
+        let useHostLayerBackground = GhosttyApp.shared.usesHostLayerBackground
+        let color = useHostLayerBackground ? effectiveBackgroundColor() : .clear
         if let layer {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
@@ -3747,13 +5261,13 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         }
         terminalSurface?.hostedView.setBackgroundColor(color)
         if GhosttyApp.shared.backgroundLogEnabled {
-            let signature = "\(color.hexString()):\(String(format: "%.3f", color.alphaComponent))"
+            let signature = "\(useHostLayerBackground ? color.hexString() : "ghostty-native"):\(String(format: "%.3f", color.alphaComponent))"
             if signature != lastLoggedSurfaceBackgroundSignature {
                 lastLoggedSurfaceBackgroundSignature = signature
                 let hasOverride = backgroundColor != nil
                 let overrideHex = backgroundColor?.hexString() ?? "nil"
                 let defaultHex = GhosttyApp.shared.defaultBackgroundColor.hexString()
-                let source = hasOverride ? "surfaceOverride" : "defaultBackground"
+                let source = useHostLayerBackground ? (hasOverride ? "surfaceOverride" : "defaultBackground") : "ghosttyNativeBackground"
                 GhosttyApp.shared.logBackground(
                     "surface background applied tab=\(tabId?.uuidString ?? "unknown") surface=\(terminalSurface?.id.uuidString ?? "unknown") source=\(source) override=\(overrideHex) default=\(defaultHex) color=\(color.hexString()) opacity=\(String(format: "%.3f", color.alphaComponent))"
                 )
@@ -3800,6 +5314,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         if cmuxShouldUseClearWindowBackground(for: color.alphaComponent) {
             window.backgroundColor = cmuxTransparentWindowBaseColor()
             window.isOpaque = false
+            GhosttyApp.shared.applyWindowBlurIfNeeded(window)
         } else {
             window.backgroundColor = color
             window.isOpaque = color.alphaComponent >= 1.0
@@ -3872,6 +5387,11 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
             NotificationCenter.default.removeObserver(windowObserver)
             self.windowObserver = nil
         }
+        // Balance the cursor stack if the view is removed while hover is active
+        if wordPathHoverActive {
+            wordPathHoverActive = false
+            NSCursor.pop()
+        }
 #if DEBUG
         dlog(
             "surface.view.windowMove surface=\(terminalSurface?.id.uuidString.prefix(5) ?? "nil") " +
@@ -3883,6 +5403,16 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
 
         // If the surface creation was deferred while detached, create/attach it now.
         terminalSurface?.attachToView(self)
+        if let terminalSurface {
+            NotificationCenter.default.post(
+                name: .terminalSurfaceHostedViewDidMoveToWindow,
+                object: terminalSurface,
+                userInfo: [
+                    "surfaceId": terminalSurface.id,
+                    "workspaceId": terminalSurface.tabId
+                ]
+            )
+        }
 
         windowObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didChangeScreenNotification,
@@ -3992,11 +5522,19 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         // The drag pasteboard can retain tab-transfer UTIs briefly after a split command
         // or other layout churn. Only defer terminal resizes while an actual drag event
         // is in flight; otherwise pre-existing panes can stay stuck at their old size.
+        // Interactive geometry resize already has an explicit fast path for sidebar and
+        // split-divider drags. Do not let stale drag-pasteboard state suppress those updates.
+        if TerminalWindowPortalRegistry.isInteractiveGeometryResizeActive {
+            return false
+        }
         guard hasTabDragPasteboardTypes() else { return false }
         return isDragResizeEvent(NSApp.currentEvent?.type)
     }
 
     private func activeSurfaceResizeDeferralReason() -> String? {
+        if inLiveResize || window?.inLiveResize == true {
+            return nil
+        }
         return Self.shouldDeferSurfaceResizeForActiveDrag() ? "tabDrag" : nil
     }
 
@@ -4132,6 +5670,12 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         updateSurfaceSize(size: size)
     }
 
+#if DEBUG
+    fileprivate func debugPendingSurfaceSize() -> CGSize? {
+        pendingSurfaceSize
+    }
+#endif
+
     /// Force a full size reconciliation for the current bounds.
     /// Keep the drawable-size cache intact so redundant refresh paths do not
     /// reallocate Metal drawables when the pixel size is unchanged.
@@ -4195,6 +5739,16 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         return surface
     }
 
+    private func requestInputRecoveryAfterSurfaceMiss(reason: String) {
+        terminalSurface?.requestBackgroundSurfaceStartIfNeeded()
+#if DEBUG
+        dlog(
+            "focus.input_recovery surface=\(terminalSurface?.id.uuidString.prefix(5) ?? "nil") " +
+            "reason=\(reason) inWindow=\(window != nil ? 1 : 0)"
+        )
+#endif
+    }
+
     func performBindingAction(_ action: String) -> Bool {
         guard let surface = surface else { return false }
         return action.withCString { cString in
@@ -4207,7 +5761,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         guard surface != nil else { return false }
         setKeyboardCopyModeActive(!keyboardCopyModeActive)
         if !keyboardCopyModeActive, let surface {
-            _ = ghostty_surface_clear_selection(surface)
+            _ = ghostty_surface_clear_selection_compat(surface)
         }
         return true
     }
@@ -4218,13 +5772,13 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         keyboardCopyModeActive = active
         if active, let surface {
             keyboardCopyModeViewportRow = keyboardCopyModeSelectionAnchor(surface: surface)?.row
-            _ = ghostty_surface_clear_selection(surface)
+            _ = ghostty_surface_clear_selection_compat(surface)
             if keyboardCopyModeViewportRow == nil {
                 keyboardCopyModeViewportRow = keyboardCopyModeImeViewportRow(surface: surface)
             }
             // Create a 1-cell selection at the terminal cursor to serve as a
             // visible cursor indicator in copy mode.
-            _ = ghostty_surface_select_cursor_cell(surface)
+            _ = ghostty_surface_select_cursor_cell_compat(surface)
         } else {
             keyboardCopyModeViewportRow = nil
         }
@@ -4261,7 +5815,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
     private func keyboardCopyModeSelectionAnchor(surface: ghostty_surface_t) -> (row: Int, y: Double)? {
         let size = ghostty_surface_size(surface)
         guard size.rows > 0, size.columns > 0 else { return nil }
-        guard ghostty_surface_select_cursor_cell(surface) else { return nil }
+        guard ghostty_surface_select_cursor_cell_compat(surface) else { return nil }
 
         var text = ghostty_text_s()
         guard ghostty_surface_read_selection(surface, &text) else { return nil }
@@ -4282,7 +5836,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         guard let anchor = keyboardCopyModeSelectionAnchor(surface: surface) else { return }
         keyboardCopyModeViewportRow = anchor.row
         // Preserve the visible cursor indicator.
-        _ = ghostty_surface_select_cursor_cell(surface)
+        _ = ghostty_surface_select_cursor_cell_compat(surface)
     }
 
     private func copyCurrentViewportLinesToClipboard(
@@ -4297,7 +5851,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         guard let anchor = keyboardCopyModeSelectionAnchor(surface: surface) else {
             return false
         }
-        _ = ghostty_surface_clear_selection(surface)
+        _ = ghostty_surface_clear_selection_compat(surface)
 
         var imeX: Double = 0
         var imeY: Double = 0
@@ -4353,18 +5907,18 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
 
         switch action {
         case .exit:
-            _ = ghostty_surface_clear_selection(surface)
+            _ = ghostty_surface_clear_selection_compat(surface)
             setKeyboardCopyModeActive(false)
         case .startSelection:
             keyboardCopyModeVisualActive = true
         case .clearSelection:
             keyboardCopyModeVisualActive = false
-            _ = ghostty_surface_clear_selection(surface)
+            _ = ghostty_surface_clear_selection_compat(surface)
             // Re-create 1-cell cursor at terminal cursor position.
-            _ = ghostty_surface_select_cursor_cell(surface)
+            _ = ghostty_surface_select_cursor_cell_compat(surface)
         case .copyAndExit:
             _ = performBindingAction("copy_to_clipboard")
-            _ = ghostty_surface_clear_selection(surface)
+            _ = ghostty_surface_clear_selection_compat(surface)
             setKeyboardCopyModeActive(false)
         case .copyLineAndExit:
             let startRow = currentKeyboardCopyModeViewportRow(surface: surface)
@@ -4373,7 +5927,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
                 startRow: startRow,
                 lineCount: count
             )
-            _ = ghostty_surface_clear_selection(surface)
+            _ = ghostty_surface_clear_selection_compat(surface)
             setKeyboardCopyModeActive(false)
         case let .scrollLines(delta):
             _ = performBindingAction("scroll_page_lines:\(delta * count)")
@@ -4483,13 +6037,21 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
 #endif
 
         let inject = {
-            self.insertText(content, replacementRange: NSRange(location: NSNotFound, length: 0))
+            self.withExternalCommittedText {
+                self.insertText(content, replacementRange: NSRange(location: NSNotFound, length: 0))
+            }
         }
         if Thread.isMainThread {
             inject()
         } else {
             DispatchQueue.main.async(execute: inject)
         }
+    }
+
+    private func withExternalCommittedText<T>(_ body: () -> T) -> T {
+        externalCommittedTextDepth += 1
+        defer { externalCommittedTextDepth -= 1 }
+        return body()
     }
 
     override func accessibilitySelectedTextRange() -> NSRange {
@@ -4533,11 +6095,17 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
     private func invalidateTextInputCoordinates(selectionChanged: Bool = false) {
         guard let inputContext else { return }
         inputContext.invalidateCharacterCoordinates()
-        #if compiler(>=6.1)
-        if #available(macOS 15.4, *), selectionChanged {
-            inputContext.textInputClientDidUpdateSelection()
-        }
-        #endif
+        guard selectionChanged else { return }
+
+        // `textInputClientDidUpdateSelection` is absent from the Xcode 16.2 AppKit SDK
+        // used by the macOS 14 compatibility lane, so call it dynamically when present.
+        let updateSelectionSelector = NSSelectorFromString("textInputClientDidUpdateSelection")
+        guard inputContext.responds(to: updateSelectionSelector) else { return }
+        _ = inputContext.perform(updateSelectionSelector)
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        PaneFirstClickFocusSettings.isEnabled()
     }
 
     override var acceptsFirstResponder: Bool { true }
@@ -4600,6 +6168,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
                     ]
                 )
             }
+            terminalSurface?.recordExternalFocusState(true)
             ghostty_surface_set_focus(surface, true)
 
             // Ghostty only restarts its vsync display link on display-id changes while focused.
@@ -4618,6 +6187,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         let result = super.resignFirstResponder()
         if result {
             desiredFocus = false
+            terminalSurface?.recordExternalFocusState(false)
         }
         if result, let surface = surface {
             let now = CACurrentMediaTime()
@@ -4632,6 +6202,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
     private var keyTextAccumulator: [String]? = nil
     private var markedText = NSMutableAttributedString()
     private var lastPerformKeyEvent: TimeInterval?
+    private var externalCommittedTextDepth = 0
     private struct SelectionSnapshot {
         let range: NSRange
         let string: String
@@ -4678,7 +6249,9 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
     /// responder-chain `insertText:` action (single-argument form).
     /// Route that into our NSTextInputClient path so text lands in the terminal.
     override func insertText(_ insertString: Any) {
-        insertText(insertString, replacementRange: NSRange(location: NSNotFound, length: 0))
+        withExternalCommittedText {
+            insertText(insertString, replacementRange: NSRange(location: NSNotFound, length: 0))
+        }
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
@@ -4705,6 +6278,22 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
             return false
         }
 
+        let flags = event.modifierFlags
+            .intersection(.deviceIndependentFlagsMask)
+            .subtracting([.numericPad, .function, .capsLock])
+
+        // Printable text without Command/Control should stay on the normal keyDown
+        // path. AppKit can still route layout-dependent punctuation through
+        // performKeyEquivalent first, and probing bindings here can misclassify
+        // keys such as ABC-QWERTZ Shift+7 ("/") or Shift+- ("?") as shortcuts.
+        if !flags.contains(.command),
+           !flags.contains(.control),
+           let text = textForKeyEvent(event),
+           shouldSendText(text) {
+            lastPerformKeyEvent = nil
+            return false
+        }
+
 #if DEBUG
         recordKeyLatency(path: "performKeyEquivalent", event: event)
 #endif
@@ -4725,7 +6314,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         // Check if this event matches a Ghostty keybinding.
         let bindingFlags: ghostty_binding_flags_e? = {
             var keyEvent = ghosttyKeyEvent(for: event, surface: surface)
-            let text = event.characters ?? ""
+            let text = textForKeyEvent(event).flatMap { shouldSendText($0) ? $0 : nil } ?? ""
             var flags = ghostty_binding_flags_e(0)
             let isBinding = text.withCString { ptr in
                 keyEvent.text = ptr
@@ -4782,7 +6371,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
             if let lastPerformKeyEvent {
                 self.lastPerformKeyEvent = nil
                 if lastPerformKeyEvent == event.timestamp {
-                    equivalent = event.characters ?? ""
+                    equivalent = event.charactersIgnoringModifiers ?? ""
                     break
                 }
             }
@@ -4846,6 +6435,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         let ensureSurfaceStart = ProcessInfo.processInfo.systemUptime
 #endif
         guard let surface = ensureSurfaceReadyForInput() else {
+            requestInputRecoveryAfterSurfaceMiss(reason: "keyDown.missingSurface")
 #if DEBUG
             ensureSurfaceMs = (ProcessInfo.processInfo.systemUptime - ensureSurfaceStart) * 1000.0
 #endif
@@ -4910,6 +6500,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         // This avoids intermittent drops after rapid split close/reparent transitions.
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags.contains(.control) && !flags.contains(.command) && !flags.contains(.option) && !hasMarkedText() {
+            terminalSurface?.recordExternalFocusState(true)
             ghostty_surface_set_focus(surface, true)
             var keyEvent = ghostty_input_key_s()
             keyEvent.action = event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
@@ -5100,18 +6691,29 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
 #endif
                     text.withCString { ptr in
                         keyEvent.text = ptr
-                        _ = ghostty_surface_key(surface, keyEvent)
+                        #if DEBUG
+                        _ = sendTimedGhosttyKey(
+                            surface,
+                            keyEvent,
+                            path: "terminal.keyDown.accumulatedGhosttySend",
+                            event: event,
+                            extra: "textBytes=\(text.utf8.count)"
+                        )
+                        #else
+                        _ = sendGhosttyKey(surface, keyEvent)
+                        #endif
                     }
 #if DEBUG
                     ghosttySendMs += (ProcessInfo.processInfo.systemUptime - ghosttySendStart) * 1000.0
                     CmuxTypingTiming.logDuration(
-                        path: "terminal.keyDown.accumulatedGhosttySend",
+                        path: "terminal.keyDown.accumulatedGhosttySend.total",
                         startedAt: sendTimingStart,
                         event: event,
                         extra: "textBytes=\(text.utf8.count)"
                     )
 #endif
                 } else {
+                    keyEvent.consumed_mods = GHOSTTY_MODS_NONE
                     keyEvent.text = nil
                     #if DEBUG
                     let ghosttySendStart = ProcessInfo.processInfo.systemUptime
@@ -5127,6 +6729,26 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
                     #endif
                 }
             }
+
+            if shouldSendCommittedIMEConfirmKey(
+                event: translationEvent,
+                markedTextBefore: markedTextBefore
+            ) {
+                keyEvent.consumed_mods = GHOSTTY_MODS_NONE
+                keyEvent.text = nil
+#if DEBUG
+                let ghosttySendStart = ProcessInfo.processInfo.systemUptime
+                _ = sendTimedGhosttyKey(
+                    surface,
+                    keyEvent,
+                    path: "terminal.keyDown.accumulatedConfirmGhosttySend",
+                    event: event
+                )
+                ghosttySendMs += (ProcessInfo.processInfo.systemUptime - ghosttySendStart) * 1000.0
+#else
+                _ = ghostty_surface_key(surface, keyEvent)
+#endif
+            }
         } else {
             // Get the appropriate text for this key event
             // For control characters, this returns the unmodified character
@@ -5136,8 +6758,11 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
                     event: translationEvent,
                     markedTextBefore: markedTextBefore
                 )
+            let suppressComposingFallbackText = keyEvent.composing
             if let text = textForKeyEvent(translationEvent) {
-                if shouldSendText(text), !suppressShiftSpaceFallbackText {
+                if shouldSendText(text),
+                   !suppressShiftSpaceFallbackText,
+                   !suppressComposingFallbackText {
                     shouldRefreshAfterTextInput = true
 #if DEBUG
                     let sendTimingStart = CmuxTypingTiming.start()
@@ -5145,18 +6770,29 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
 #endif
                     text.withCString { ptr in
                         keyEvent.text = ptr
-                        _ = ghostty_surface_key(surface, keyEvent)
+                        #if DEBUG
+                        _ = sendTimedGhosttyKey(
+                            surface,
+                            keyEvent,
+                            path: "terminal.keyDown.ghosttySend",
+                            event: event,
+                            extra: "textBytes=\(text.utf8.count)"
+                        )
+                        #else
+                        _ = sendGhosttyKey(surface, keyEvent)
+                        #endif
                     }
 #if DEBUG
                     ghosttySendMs += (ProcessInfo.processInfo.systemUptime - ghosttySendStart) * 1000.0
                     CmuxTypingTiming.logDuration(
-                        path: "terminal.keyDown.ghosttySend",
+                        path: "terminal.keyDown.ghosttySend.total",
                         startedAt: sendTimingStart,
                         event: event,
                         extra: "textBytes=\(text.utf8.count)"
                     )
 #endif
                 } else {
+                    keyEvent.consumed_mods = GHOSTTY_MODS_NONE
                     keyEvent.text = nil
                     #if DEBUG
                     let ghosttySendStart = ProcessInfo.processInfo.systemUptime
@@ -5172,6 +6808,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
                     #endif
                 }
             } else {
+                keyEvent.consumed_mods = GHOSTTY_MODS_NONE
                 keyEvent.text = nil
                 #if DEBUG
                 let ghosttySendStart = ProcessInfo.processInfo.systemUptime
@@ -5276,14 +6913,80 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         keyEvent.text = nil
         keyEvent.composing = false
         _ = ghostty_surface_key(surface, keyEvent)
+
+        let selectionActive = ghostty_surface_has_selection(surface)
+        let suppressCommandPathHover = event.modifierFlags.contains(.command) && selectionActive
+        // Refresh ghostty's mouse position so quicklook_word uses current coordinates
+        // when Cmd is pressed while the pointer is stationary.
+        let eventPoint = convert(event.locationInWindow, from: nil)
+        trackMousePointIfUsable(eventPoint)
+        let point = preferredPointerPoint(from: eventPoint) ?? eventPoint
+#if DEBUG
+        if event.modifierFlags.contains(.command) || selectionActive {
+            runtimeDebugLog(
+                hypothesisID: "h1",
+                name: "flags_changed",
+                expected: "selection active should suppress cmd-hover",
+                actual: suppressCommandPathHover ? "suppressed" : "forwarded",
+                data: [
+                    "flags": debugModifierString(event.modifierFlags),
+                    "selection_active": selectionActive,
+                    "point_x": eventPoint.x,
+                    "point_y": eventPoint.y,
+                    "resolved_point_x": point.x,
+                    "resolved_point_y": point.y
+                ]
+            )
+        }
+#endif
+        ghostty_surface_mouse_pos(
+            surface,
+            point.x,
+            bounds.height - point.y,
+            hoverModsFromFlags(
+                event.modifierFlags,
+                suppressCommandPathHover: suppressCommandPathHover
+            )
+        )
+        updateWordPathHover(
+            at: point,
+            cmdHeld: event.modifierFlags.contains(.command),
+            suppressPathHover: suppressCommandPathHover
+        )
+    }
+
+    private func shouldSuppressCommandPathHover(for flags: NSEvent.ModifierFlags) -> Bool {
+        guard flags.contains(.command), let surface else { return false }
+        return ghostty_surface_has_selection(surface)
+    }
+
+    private func hoverModsFromFlags(
+        _ flags: NSEvent.ModifierFlags,
+        suppressCommandPathHover: Bool
+    ) -> ghostty_input_mods_e {
+        let effectiveFlags = suppressCommandPathHover ? flags.subtracting(.command) : flags
+#if DEBUG
+        if suppressCommandPathHover, flags.contains(.command) {
+            _ = CmuxUITestCapture.mutateJSONObjectIfConfigured(
+                envKey: "CMUX_UI_TEST_CMD_HOVER_DIAGNOSTICS_PATH"
+            ) { payload in
+                payload["suppressed_command_hover_count"] = (payload["suppressed_command_hover_count"] as? Int ?? 0) + 1
+            }
+        }
+#endif
+        return modsFromFlags(effectiveFlags)
     }
 
     private func modsFromEvent(_ event: NSEvent) -> ghostty_input_mods_e {
+        modsFromFlags(event.modifierFlags)
+    }
+
+    private func modsFromFlags(_ flags: NSEvent.ModifierFlags) -> ghostty_input_mods_e {
         var mods = GHOSTTY_MODS_NONE.rawValue
-        if event.modifierFlags.contains(.shift) { mods |= GHOSTTY_MODS_SHIFT.rawValue }
-        if event.modifierFlags.contains(.control) { mods |= GHOSTTY_MODS_CTRL.rawValue }
-        if event.modifierFlags.contains(.option) { mods |= GHOSTTY_MODS_ALT.rawValue }
-        if event.modifierFlags.contains(.command) { mods |= GHOSTTY_MODS_SUPER.rawValue }
+        if flags.contains(.shift) { mods |= GHOSTTY_MODS_SHIFT.rawValue }
+        if flags.contains(.control) { mods |= GHOSTTY_MODS_CTRL.rawValue }
+        if flags.contains(.option) { mods |= GHOSTTY_MODS_ALT.rawValue }
+        if flags.contains(.command) { mods |= GHOSTTY_MODS_SUPER.rawValue }
         return ghostty_input_mods_e(rawValue: mods)
     }
 
@@ -5325,7 +7028,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
 
             // If we have a single control character, return the character without
             // the control modifier so Ghostty's KeyEncoder can handle it.
-            if scalar.value < 0x20 {
+            if isControlCharacterScalar(scalar) {
                 if flags.contains(.control) {
                     return event.characters(byApplyingModifiers: event.modifierFlags.subtracting(.control))
                 }
@@ -5362,9 +7065,16 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         return scalar.value
     }
 
+    private func isControlCharacterScalar(_ scalar: UnicodeScalar) -> Bool {
+        scalar.value < 0x20 || scalar.value == 0x7F
+    }
+
     private func shouldSendText(_ text: String) -> Bool {
-        guard let first = text.utf8.first else { return false }
-        return first >= 0x20
+        guard !text.isEmpty else { return false }
+        if text.count == 1, let scalar = text.unicodeScalars.first {
+            return !isControlCharacterScalar(scalar)
+        }
+        return true
     }
 
     /// If AppKit consumed Shift+Space for IME/input-source switching, interpretKeyEvents
@@ -5376,6 +7086,16 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         guard flags == [.shift] else { return false }
         guard !markedTextBefore, markedText.length == 0 else { return false }
         return true
+    }
+
+    private func shouldSendCommittedIMEConfirmKey(event: NSEvent, markedTextBefore: Bool) -> Bool {
+        guard markedTextBefore, markedText.length == 0 else { return false }
+        guard event.keyCode == 36 || event.keyCode == 76 else { return false }
+        // Korean IME: Enter commits the syllable AND executes the command (single step).
+        // Japanese/Chinese IME: Enter only confirms the conversion; a second Enter executes.
+        // Only send the extra Return key for Korean input sources.
+        guard let sourceId = KeyboardLayout.id else { return false }
+        return sourceId.range(of: "korean", options: .caseInsensitive) != nil
     }
 
     private func ghosttyKeyEvent(for event: NSEvent, surface: ghostty_surface_t) -> ghostty_input_key_s {
@@ -5458,6 +7178,42 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
             flags.contains(.option) ? "opt" : nil,
         ].compactMap { $0 }.joined(separator: "+")
     }
+
+    private func runtimeDebugLog(
+        hypothesisID: String,
+        name: String,
+        expected: String? = nil,
+        actual: String? = nil,
+        data: [String: Any] = [:]
+    ) {
+        var payload = data
+        payload["surface_id"] = terminalSurface?.id.uuidString ?? "nil"
+        payload["word_path_hover_active"] = wordPathHoverActive
+        CmuxRuntimeDebugCapture.logIfConfigured(
+            hypothesisID: hypothesisID,
+            source: "GhosttyNSView.\(name)",
+            name: name,
+            expected: expected,
+            actual: actual,
+            data: payload
+        )
+    }
+
+    private func runtimeDebugResolutionPayload(_ resolution: WordPathResolution?) -> [String: Any] {
+        guard let resolution else {
+            return [
+                "resolution_source": "none",
+                "resolved_path_basename": "",
+                "raw_token": ""
+            ]
+        }
+
+        return [
+            "resolution_source": resolution.source.rawValue,
+            "resolved_path_basename": URL(fileURLWithPath: resolution.path).lastPathComponent,
+            "raw_token": resolution.rawToken
+        ]
+    }
     #endif
 
     private func requestPointerFocusRecovery() {
@@ -5484,8 +7240,14 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
             )
         }
         guard let surface = surface else { return }
-        let point = convert(event.locationInWindow, from: nil)
-        ghostty_surface_mouse_pos(surface, point.x, bounds.height - point.y, modsFromEvent(event))
+        let eventPoint = convert(event.locationInWindow, from: nil)
+        trackMousePointIfUsable(eventPoint)
+        let point = preferredPointerPoint(from: eventPoint) ?? eventPoint
+        // Only update mouse position on the first click to prevent unwanted cursor
+        // movement during double-click selection (issue #1698)
+        if event.clickCount == 1 {
+            ghostty_surface_mouse_pos(surface, point.x, bounds.height - point.y, modsFromEvent(event))
+        }
         _ = ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT, modsFromEvent(event))
     }
 
@@ -5494,8 +7256,578 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         dlog("terminal.mouseUp surface=\(terminalSurface?.id.uuidString.prefix(5) ?? "nil") mods=[\(debugModifierString(event.modifierFlags))]")
         #endif
         guard let surface = surface else { return }
-        _ = ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_LEFT, modsFromEvent(event))
+        let point = convert(event.locationInWindow, from: nil)
+        let consumed = ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_LEFT, modsFromEvent(event))
+        _ = handleCommandClickRelease(at: point, modifierFlags: event.modifierFlags, ghosttyConsumed: consumed)
     }
+
+    /// Attempt to open the word under the mouse cursor as a file path, resolved
+    /// against the terminal panel's current working directory.
+    private func tryOpenWordAsPath(at point: NSPoint? = nil) {
+        guard let resolution = resolveWordUnderCursorPath(at: point) else { return }
+
+        #if DEBUG
+        dlog("link.wordFallback resolved=\(resolution.path) source=\(resolution.source.rawValue)")
+        #endif
+
+        PreferredEditorSettings.open(URL(fileURLWithPath: resolution.path))
+    }
+
+    /// Check if the word under the mouse cursor resolves to an existing file/directory
+    /// in the terminal panel's CWD. Returns the resolved absolute path, or nil.
+    private func resolveWordUnderCursorAsPath(at point: NSPoint? = nil) -> String? {
+        resolveWordUnderCursorPath(at: point)?.path
+    }
+
+    private func resolveWordUnderCursorPath(at point: NSPoint? = nil) -> WordPathResolution? {
+        guard let surface = surface else { return nil }
+
+        guard let termSurface = terminalSurface,
+              let workspace = termSurface.owningWorkspace(),
+              !workspace.isRemoteTerminalSurface(termSurface.id) else { return nil }
+
+        guard let cwd = resolvedWordPathWorkingDirectory(workspace: workspace, terminalSurface: termSurface) else {
+            return nil
+        }
+
+        let snapshotPoint = preferredPointerPoint(from: point)
+        let pointSnapshotResolution = snapshotPoint.flatMap {
+            resolveVisibleWordPath(
+                at: $0,
+                cwd: cwd,
+                workspace: workspace,
+                terminalSurface: termSurface
+            )
+        }
+
+        var text = ghostty_text_s()
+        if ghostty_surface_quicklook_word(surface, &text) {
+            defer { ghostty_surface_free_text(surface, &text) }
+            var quicklookResolution: WordPathResolution?
+            if text.text_len > 0, let ptr = text.text {
+                let wordData = Data(bytes: ptr, count: Int(text.text_len))
+                if let decodedWord = String(bytes: wordData, encoding: .utf8) {
+#if DEBUG
+                    let resolvedQuicklookWord = cmuxTerminalCmdClickQuicklookOverride(decodedWord)
+#else
+                    let resolvedQuicklookWord = decodedWord
+#endif
+                    if let resolvedPath = cmuxResolveQuicklookPath(resolvedQuicklookWord, cwd: cwd) {
+                        quicklookResolution = makeWordPathResolution(
+                            path: resolvedPath,
+                            source: .quicklook,
+                            rawToken: resolvedQuicklookWord
+                        )
+                    }
+                }
+            }
+
+            var viewportResolution: WordPathResolution?
+            if text.offset_len > 0 {
+#if DEBUG
+                let viewportOffsetStart = cmuxTerminalCmdClickViewportOffsetDelta(Int(text.offset_start))
+#else
+                let viewportOffsetStart = Int(text.offset_start)
+#endif
+                viewportResolution = resolveVisibleWordPathFromViewportOffset(
+                    viewportOffsetStart,
+                    cwd: cwd,
+                    workspace: workspace,
+                    terminalSurface: termSurface
+                )
+            }
+
+            if let viewportResolution {
+                // The pointer-anchored snapshot is the only source tied directly to the
+                // actual click location. Prefer it over quicklook and viewport offsets,
+                // which can lag or target a sibling entry in multi-column `ls` output.
+                if let pointSnapshotResolution {
+                    return pointSnapshotResolution
+                }
+                return viewportResolution
+            }
+
+            if let pointSnapshotResolution {
+                return pointSnapshotResolution
+            }
+
+            if let quicklookResolution {
+                return quicklookResolution
+            }
+        }
+
+        return pointSnapshotResolution
+    }
+
+    #if DEBUG
+    private func cmuxTerminalCmdClickQuicklookOverride(_ decodedWord: String) -> String {
+        let env = ProcessInfo.processInfo.environment
+        guard let override = env["CMUX_UI_TEST_TERMINAL_CMD_CLICK_QUICKLOOK_OVERRIDE"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !override.isEmpty else {
+            return decodedWord
+        }
+        return override
+    }
+
+    private func cmuxTerminalCmdClickViewportOffsetDelta(_ viewportOffsetStart: Int) -> Int {
+        let env = ProcessInfo.processInfo.environment
+        guard let delta = env["CMUX_UI_TEST_TERMINAL_CMD_CLICK_VIEWPORT_OFFSET_DELTA"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              let parsedDelta = Int(delta) else {
+            return viewportOffsetStart
+        }
+        return max(0, viewportOffsetStart + parsedDelta)
+    }
+    #endif
+
+    /// Update the pointing-hand cursor when Cmd-hovering over a bare filename
+    /// that exists in the terminal's CWD.
+    private func updateWordPathHover(
+        at point: NSPoint? = nil,
+        cmdHeld: Bool,
+        suppressPathHover: Bool = false
+    ) {
+        let hoverWasActive = wordPathHoverActive
+        guard cmdHeld, !suppressPathHover else {
+            if wordPathHoverActive {
+                wordPathHoverActive = false
+                NSCursor.pop()
+            }
+#if DEBUG
+            if cmdHeld || suppressPathHover || hoverWasActive {
+                runtimeDebugLog(
+                    hypothesisID: "h1",
+                    name: "hover_update",
+                    expected: "cmd-hover off while selection is active",
+                    actual: suppressPathHover ? "suppressed" : "inactive",
+                    data: [
+                        "cmd_held": cmdHeld,
+                        "suppress_path_hover": suppressPathHover,
+                        "hover_active_before": hoverWasActive,
+                        "hover_active_after": wordPathHoverActive
+                    ]
+                )
+            }
+#endif
+            return
+        }
+
+        let resolution = resolveWordUnderCursorPath(at: point)
+        if resolution != nil {
+            if !wordPathHoverActive {
+                wordPathHoverActive = true
+                NSCursor.pointingHand.push()
+            }
+        } else if wordPathHoverActive {
+            wordPathHoverActive = false
+            NSCursor.pop()
+        }
+#if DEBUG
+        if cmdHeld || hoverWasActive || wordPathHoverActive || resolution != nil {
+            var payload: [String: Any] = [
+                "cmd_held": cmdHeld,
+                "suppress_path_hover": suppressPathHover,
+                "hover_active_before": hoverWasActive,
+                "hover_active_after": wordPathHoverActive
+            ]
+            for (key, value) in runtimeDebugResolutionPayload(resolution) {
+                payload[key] = value
+            }
+            runtimeDebugLog(
+                hypothesisID: resolution == nil ? "h1" : "h2",
+                name: "hover_update",
+                expected: "resolved path only when hover should activate",
+                actual: wordPathHoverActive ? "hover_active" : "hover_inactive",
+                data: payload
+            )
+        }
+#endif
+    }
+
+    private func resolvedWordPathWorkingDirectory(
+        workspace: Workspace,
+        terminalSurface: TerminalSurface
+    ) -> String? {
+        if let dir = workspace.panelDirectories[terminalSurface.id]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !dir.isEmpty {
+            return dir
+        }
+        if let dir = workspace.terminalPanel(for: terminalSurface.id)?
+            .requestedWorkingDirectory?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !dir.isEmpty {
+            return dir
+        }
+        let dir = workspace.currentDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        return dir.isEmpty ? nil : dir
+    }
+
+    private func pointIsUsableForWordResolution(_ point: NSPoint) -> Bool {
+        bounds.width > 0 &&
+        bounds.height > 0 &&
+        point.x >= 0 &&
+        point.y >= 0 &&
+        point.x <= bounds.width &&
+        point.y <= bounds.height
+    }
+
+    private func trackMousePointIfUsable(_ point: NSPoint) {
+        guard pointIsUsableForWordResolution(point) else { return }
+        lastKnownMousePointInView = point
+    }
+
+    private func preferredPointerPoint(from eventPoint: NSPoint? = nil) -> NSPoint? {
+        if let eventPoint, pointIsUsableForWordResolution(eventPoint) {
+            lastKnownMousePointInView = eventPoint
+            return eventPoint
+        }
+        if let currentPoint = currentMousePointInView(), pointIsUsableForWordResolution(currentPoint) {
+            lastKnownMousePointInView = currentPoint
+            return currentPoint
+        }
+        return lastKnownMousePointInView ?? eventPoint
+    }
+
+    private func currentMousePointInView() -> NSPoint? {
+        guard let window else { return nil }
+        return convert(window.mouseLocationOutsideOfEventStream, from: nil)
+    }
+
+    private func resolveVisibleWordPathFromViewportOffset(
+        _ viewportOffsetStart: Int,
+        cwd: String,
+        workspace: Workspace,
+        terminalSurface: TerminalSurface
+    ) -> WordPathResolution? {
+        guard let panel = workspace.terminalPanel(for: terminalSurface.id),
+              let surface else {
+            return nil
+        }
+
+        let size = ghostty_surface_size(surface)
+        let rows = max(Int(size.rows), 1)
+        let cols = max(Int(size.columns), 1)
+        let visibleText = TerminalController.shared.readTerminalTextForSnapshot(
+            terminalPanel: panel,
+            lineLimit: max(200, rows * 4)
+        ) ?? ""
+        let visibleLines = cmuxVisibleTerminalLines(from: visibleText, rows: rows)
+        let rowOffset = max(0, rows - visibleLines.count)
+        let rowFromTop = max(0, min(rows - 1, viewportOffsetStart / cols))
+        let visibleRow = rowFromTop - rowOffset
+        guard visibleRow >= 0, visibleRow < visibleLines.count else { return nil }
+
+        let column = max(0, min(cols - 1, viewportOffsetStart % cols))
+        guard let resolution = cmuxResolveVisibleLinePath(
+            visibleLines[visibleRow],
+            column: column,
+            cwd: cwd
+        ) else {
+            return nil
+        }
+
+        return makeWordPathResolution(
+            path: resolution.path,
+            source: .snapshot,
+            rawToken: resolution.rawToken
+        )
+    }
+
+    private func resolveVisibleWordPath(
+        at point: NSPoint,
+        cwd: String,
+        workspace: Workspace,
+        terminalSurface: TerminalSurface
+    ) -> WordPathResolution? {
+        guard let panel = workspace.terminalPanel(for: terminalSurface.id),
+              let surface else {
+            return nil
+        }
+
+        let size = ghostty_surface_size(surface)
+        let rows = max(Int(size.rows), 1)
+        let cols = max(Int(size.columns), 1)
+        let resolvedCellWidth = cellSize.width > 0 ? cellSize.width : CGFloat(size.cell_width_px)
+        let resolvedCellHeight = cellSize.height > 0 ? cellSize.height : CGFloat(size.cell_height_px)
+        guard resolvedCellWidth > 0, resolvedCellHeight > 0 else { return nil }
+
+        let visibleText = TerminalController.shared.readTerminalTextForSnapshot(
+            terminalPanel: panel,
+            lineLimit: max(200, rows * 4)
+        ) ?? ""
+        let visibleLines = cmuxVisibleTerminalLines(from: visibleText, rows: rows)
+        let rowOffset = max(0, rows - visibleLines.count)
+        let xInset = max(0, (bounds.width - (CGFloat(cols) * resolvedCellWidth)) / 2)
+        let yInset = max(0, (bounds.height - (CGFloat(rows) * resolvedCellHeight)) / 2)
+
+        let yFromTop = bounds.height - point.y
+        let rowFromTop = max(0, min(rows - 1, Int((yFromTop - yInset) / resolvedCellHeight)))
+        let visibleRow = rowFromTop - rowOffset
+        guard visibleRow >= 0, visibleRow < visibleLines.count else { return nil }
+
+        let column = max(0, min(cols - 1, Int((point.x - xInset) / resolvedCellWidth)))
+        guard let resolution = cmuxResolveVisibleLinePath(
+            visibleLines[visibleRow],
+            column: column,
+            cwd: cwd
+        ) else {
+            return nil
+        }
+
+        return makeWordPathResolution(
+            path: resolution.path,
+            source: .snapshot,
+            rawToken: resolution.rawToken
+        )
+    }
+
+    @discardableResult
+    private func handleCommandClickRelease(
+        at point: NSPoint,
+        modifierFlags: NSEvent.ModifierFlags,
+        ghosttyConsumed: Bool
+    ) -> WordPathResolution? {
+        guard let surface else { return nil }
+        let suppressCommandPathHover = shouldSuppressCommandPathHover(for: modifierFlags)
+        let cmdHeld = modifierFlags.contains(.command)
+        let resolvedPoint = preferredPointerPoint(from: point)
+        guard cmdHeld, !suppressCommandPathHover else {
+#if DEBUG
+            if cmdHeld || suppressCommandPathHover {
+                runtimeDebugLog(
+                    hypothesisID: "h1",
+                    name: "command_click_release",
+                    expected: "cmd-click fallback only when selection is inactive",
+                    actual: suppressCommandPathHover ? "suppressed" : "not_cmd_click",
+                    data: [
+                        "flags": debugModifierString(modifierFlags),
+                        "ghostty_consumed": ghosttyConsumed,
+                        "point_x": point.x,
+                        "point_y": point.y,
+                        "resolved_point_x": resolvedPoint?.x ?? -1,
+                        "resolved_point_y": resolvedPoint?.y ?? -1,
+                        "suppress_path_hover": suppressCommandPathHover
+                    ]
+                )
+            }
+#endif
+            return nil
+        }
+
+        // Refresh ghostty's cached mouse position so quicklook_word reads
+        // up-to-date coordinates (mouseDown skips pos update on double-click).
+        if let resolvedPoint {
+            ghostty_surface_mouse_pos(
+                surface,
+                resolvedPoint.x,
+                bounds.height - resolvedPoint.y,
+                modsFromFlags(modifierFlags)
+            )
+        }
+
+        guard let resolution = resolveWordUnderCursorPath(at: resolvedPoint) else {
+#if DEBUG
+            runtimeDebugLog(
+                hypothesisID: "h2",
+                name: "command_click_release",
+                expected: "cmd-click should resolve the token under the pointer",
+                actual: "no_resolution",
+                data: [
+                    "flags": debugModifierString(modifierFlags),
+                    "ghostty_consumed": ghosttyConsumed,
+                    "point_x": point.x,
+                    "point_y": point.y,
+                    "resolved_point_x": resolvedPoint?.x ?? -1,
+                    "resolved_point_y": resolvedPoint?.y ?? -1
+                ]
+            )
+#endif
+            return nil
+        }
+        guard !ghosttyConsumed || resolution.source == .snapshot else {
+#if DEBUG
+            var payload: [String: Any] = [
+                "flags": debugModifierString(modifierFlags),
+                "ghostty_consumed": ghosttyConsumed,
+                "point_x": point.x,
+                "point_y": point.y,
+                "resolved_point_x": resolvedPoint?.x ?? -1,
+                "resolved_point_y": resolvedPoint?.y ?? -1,
+                "suppress_path_hover": suppressCommandPathHover
+            ]
+            for (key, value) in runtimeDebugResolutionPayload(resolution) {
+                payload[key] = value
+            }
+            runtimeDebugLog(
+                hypothesisID: "h3",
+                name: "command_click_release",
+                expected: "ghostty-consumed clicks should only skip fallback for real ghostty targets",
+                actual: "consumed_quicklook_resolution_skipped",
+                data: payload
+            )
+#endif
+            return nil
+        }
+
+        #if DEBUG
+        dlog(
+            "link.wordFallback resolved=\(resolution.path) source=\(resolution.source.rawValue) consumed=\(ghosttyConsumed ? 1 : 0)"
+        )
+        var payload: [String: Any] = [
+            "flags": debugModifierString(modifierFlags),
+            "ghostty_consumed": ghosttyConsumed,
+            "point_x": point.x,
+            "point_y": point.y,
+            "resolved_point_x": resolvedPoint?.x ?? -1,
+            "resolved_point_y": resolvedPoint?.y ?? -1,
+            "suppress_path_hover": suppressCommandPathHover
+        ]
+        for (key, value) in runtimeDebugResolutionPayload(resolution) {
+            payload[key] = value
+        }
+        runtimeDebugLog(
+            hypothesisID: resolution.source == .snapshot ? "h3" : "h2",
+            name: "command_click_release",
+            expected: "cmd-click should open the resolved path",
+            actual: "opening_resolved_path",
+            data: payload
+        )
+        #endif
+
+        PreferredEditorSettings.open(URL(fileURLWithPath: resolution.path))
+        return resolution
+    }
+
+    private func clampedDebugPoint(_ point: NSPoint) -> NSPoint {
+        NSPoint(
+            x: min(max(point.x, 1), max(bounds.width - 1, 1)),
+            y: min(max(point.y, 1), max(bounds.height - 1, 1))
+        )
+    }
+
+#if DEBUG
+    func debugSimulateSelection(from startPoint: NSPoint, to endPoint: NSPoint) -> Bool {
+        guard let surface else { return false }
+        let start = clampedDebugPoint(startPoint)
+        let end = clampedDebugPoint(endPoint)
+        let mods = GHOSTTY_MODS_NONE
+
+        window?.makeFirstResponder(self)
+        ghostty_surface_mouse_pos(surface, start.x, bounds.height - start.y, mods)
+        _ = ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT, mods)
+
+        let steps = max(4, Int(max(abs(end.x - start.x), abs(end.y - start.y)) / max(cellSize.width, 1)))
+        for step in 1...steps {
+            let progress = CGFloat(step) / CGFloat(steps)
+            let intermediatePoint = NSPoint(
+                x: start.x + ((end.x - start.x) * progress),
+                y: start.y + ((end.y - start.y) * progress)
+            )
+            let clampedIntermediatePoint = clampedDebugPoint(intermediatePoint)
+            ghostty_surface_mouse_pos(
+                surface,
+                clampedIntermediatePoint.x,
+                bounds.height - clampedIntermediatePoint.y,
+                mods
+            )
+        }
+
+        _ = ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_LEFT, mods)
+        return ghostty_surface_has_selection(surface)
+    }
+
+    func debugSimulateCommandHover(at point: NSPoint) -> Bool {
+        guard let surface else { return false }
+        let clampedPoint = clampedDebugPoint(point)
+        let flags: NSEvent.ModifierFlags = [.command]
+        let suppressCommandPathHover = shouldSuppressCommandPathHover(for: flags)
+
+        ghostty_surface_mouse_pos(
+            surface,
+            clampedPoint.x,
+            bounds.height - clampedPoint.y,
+            hoverModsFromFlags(
+                flags,
+                suppressCommandPathHover: suppressCommandPathHover
+            )
+        )
+        updateWordPathHover(
+            at: clampedPoint,
+            cmdHeld: true,
+            suppressPathHover: suppressCommandPathHover
+        )
+        return suppressCommandPathHover
+    }
+
+    func debugSimulateCommandHoverDetails(at point: NSPoint) -> [String: Any] {
+        guard let surface else {
+            return ["error": "Missing surface"]
+        }
+
+        let clampedPoint = clampedDebugPoint(point)
+        let flags: NSEvent.ModifierFlags = [.command]
+        let suppressCommandPathHover = shouldSuppressCommandPathHover(for: flags)
+
+        ghostty_surface_mouse_pos(
+            surface,
+            clampedPoint.x,
+            bounds.height - clampedPoint.y,
+            hoverModsFromFlags(
+                flags,
+                suppressCommandPathHover: suppressCommandPathHover
+            )
+        )
+
+        let resolution = suppressCommandPathHover ? nil : resolveWordUnderCursorPath(at: clampedPoint)
+        updateWordPathHover(
+            at: clampedPoint,
+            cmdHeld: true,
+            suppressPathHover: suppressCommandPathHover
+        )
+
+        var payload: [String: Any] = [
+            "hoverActive": wordPathHoverActive ? "1" : "0",
+            "suppressed": suppressCommandPathHover ? "1" : "0"
+        ]
+        if let resolution {
+            payload["resolvedPath"] = resolution.path
+            payload["resolutionSource"] = resolution.source.rawValue
+            payload["rawToken"] = resolution.rawToken
+        }
+        return payload
+    }
+
+    func debugSimulateCommandClick(at point: NSPoint) -> [String: Any] {
+        guard let surface else {
+            return ["error": "Missing surface"]
+        }
+
+        let clampedPoint = clampedDebugPoint(point)
+        let flags: NSEvent.ModifierFlags = [.command]
+        let mods = modsFromFlags(flags)
+
+        window?.makeFirstResponder(self)
+        ghostty_surface_mouse_pos(surface, clampedPoint.x, bounds.height - clampedPoint.y, mods)
+        let pressHandled = ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT, mods)
+        let releaseConsumed = ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_LEFT, mods)
+        let resolution = handleCommandClickRelease(
+            at: clampedPoint,
+            modifierFlags: flags,
+            ghosttyConsumed: releaseConsumed
+        )
+
+        var payload: [String: Any] = [
+            "pressHandled": pressHandled ? "1" : "0",
+            "releaseConsumed": releaseConsumed ? "1" : "0",
+        ]
+        if let resolution {
+            payload["openedPath"] = resolution.path
+            payload["resolutionSource"] = resolution.source.rawValue
+            payload["rawToken"] = resolution.rawToken
+        }
+        return payload
+    }
+#endif
 
     override func rightMouseDown(with event: NSEvent) {
         guard let surface = surface else { return }
@@ -5557,19 +7889,31 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
 
         let menu = NSMenu()
         if onTriggerFlash != nil {
-            let flashItem = menu.addItem(withTitle: "Trigger Flash", action: #selector(triggerFlash(_:)), keyEquivalent: "")
+            let flashItem = menu.addItem(
+                withTitle: String(localized: "terminalContextMenu.triggerFlash", defaultValue: "Trigger Flash"),
+                action: #selector(triggerFlash(_:)),
+                keyEquivalent: ""
+            )
             flashItem.target = self
             menu.addItem(.separator())
         }
         if ghostty_surface_has_selection(surface) {
-            let item = menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
+            let item = menu.addItem(
+                withTitle: String(localized: "terminalContextMenu.copy", defaultValue: "Copy"),
+                action: #selector(copy(_:)),
+                keyEquivalent: ""
+            )
             item.target = self
         }
-        let pasteItem = menu.addItem(withTitle: "Paste", action: #selector(paste(_:)), keyEquivalent: "")
+        let pasteItem = menu.addItem(
+            withTitle: String(localized: "terminalContextMenu.paste", defaultValue: "Paste"),
+            action: #selector(paste(_:)),
+            keyEquivalent: ""
+        )
         pasteItem.target = self
         menu.addItem(.separator())
         let splitHorizontallyItem = menu.addItem(
-            withTitle: "Split Horizontally",
+            withTitle: String(localized: "terminalContextMenu.splitHorizontally", defaultValue: "Split Horizontally"),
             action: #selector(splitHorizontally(_:)),
             keyEquivalent: "d"
         )
@@ -5581,7 +7925,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         )
 
         let splitVerticallyItem = menu.addItem(
-            withTitle: "Split Vertically",
+            withTitle: String(localized: "terminalContextMenu.splitVertically", defaultValue: "Split Vertically"),
             action: #selector(splitVertically(_:)),
             keyEquivalent: "d"
         )
@@ -5589,6 +7933,17 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         splitVerticallyItem.keyEquivalentModifierMask = [.command]
         splitVerticallyItem.image = NSImage(
             systemSymbolName: "rectangle.righthalf.inset.filled",
+            accessibilityDescription: nil
+        )
+        menu.addItem(.separator())
+        let resetTerminalItem = menu.addItem(
+            withTitle: String(localized: "terminalContextMenu.resetTerminal", defaultValue: "Reset Terminal"),
+            action: #selector(resetTerminal(_:)),
+            keyEquivalent: ""
+        )
+        resetTerminalItem.target = self
+        resetTerminalItem.image = NSImage(
+            systemSymbolName: "arrow.trianglehead.2.clockwise",
             accessibilityDescription: nil
         )
         return menu
@@ -5621,26 +7976,62 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
               let manager = app.tabManagerFor(tabId: tabId) ?? app.tabManager else {
             return false
         }
-        return manager.newSplit(tabId: tabId, surfaceId: surfaceId, direction: direction) != nil
+        return manager.createSplit(tabId: tabId, surfaceId: surfaceId, direction: direction) != nil
     }
 
     @objc private func triggerFlash(_ sender: Any?) {
         onTriggerFlash?()
     }
 
+    @objc private func resetTerminal(_ sender: Any?) {
+        _ = performBindingAction("reset")
+    }
+
     override func mouseMoved(with event: NSEvent) {
         maybeRequestFirstResponderForMouseFocus()
         guard let surface = surface else { return }
-        let point = convert(event.locationInWindow, from: nil)
-        ghostty_surface_mouse_pos(surface, point.x, bounds.height - point.y, modsFromEvent(event))
+        let suppressCommandPathHover = shouldSuppressCommandPathHover(for: event.modifierFlags)
+        let eventPoint = convert(event.locationInWindow, from: nil)
+        trackMousePointIfUsable(eventPoint)
+        let point = preferredPointerPoint(from: eventPoint) ?? eventPoint
+        ghostty_surface_mouse_pos(
+            surface,
+            point.x,
+            bounds.height - point.y,
+            hoverModsFromFlags(
+                event.modifierFlags,
+                suppressCommandPathHover: suppressCommandPathHover
+            )
+        )
+        updateWordPathHover(
+            at: point,
+            cmdHeld: event.modifierFlags.contains(.command),
+            suppressPathHover: suppressCommandPathHover
+        )
     }
 
     override func mouseEntered(with event: NSEvent) {
         super.mouseEntered(with: event)
         maybeRequestFirstResponderForMouseFocus()
         guard let surface = surface else { return }
-        let point = convert(event.locationInWindow, from: nil)
-        ghostty_surface_mouse_pos(surface, point.x, bounds.height - point.y, modsFromEvent(event))
+        let suppressCommandPathHover = shouldSuppressCommandPathHover(for: event.modifierFlags)
+        let eventPoint = convert(event.locationInWindow, from: nil)
+        trackMousePointIfUsable(eventPoint)
+        let point = preferredPointerPoint(from: eventPoint) ?? eventPoint
+        ghostty_surface_mouse_pos(
+            surface,
+            point.x,
+            bounds.height - point.y,
+            hoverModsFromFlags(
+                event.modifierFlags,
+                suppressCommandPathHover: suppressCommandPathHover
+            )
+        )
+        updateWordPathHover(
+            at: point,
+            cmdHeld: event.modifierFlags.contains(.command),
+            suppressPathHover: suppressCommandPathHover
+        )
     }
 
     private func maybeRequestFirstResponderForMouseFocus() {
@@ -5661,6 +8052,10 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
     }
 
     override func mouseExited(with event: NSEvent) {
+        if wordPathHoverActive {
+            wordPathHoverActive = false
+            NSCursor.pop()
+        }
         guard let surface = surface else { return }
         if NSEvent.pressedMouseButtons != 0 {
             return
@@ -5670,11 +8065,14 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
 
     override func mouseDragged(with event: NSEvent) {
         guard let surface = surface else { return }
-        let point = convert(event.locationInWindow, from: nil)
+        let eventPoint = convert(event.locationInWindow, from: nil)
+        trackMousePointIfUsable(eventPoint)
+        let point = preferredPointerPoint(from: eventPoint) ?? eventPoint
         ghostty_surface_mouse_pos(surface, point.x, bounds.height - point.y, modsFromEvent(event))
     }
 
     override func scrollWheel(with event: NSEvent) {
+        NotificationCenter.default.post(name: .ghosttyDidReceiveWheelScroll, object: self)
         guard let surface = surface else { return }
         lastScrollEventTime = CACurrentMediaTime()
         Self.focusLog("scrollWheel: surface=\(terminalSurface?.id.uuidString ?? "nil") firstResponder=\(String(describing: window?.firstResponder))")
@@ -5785,39 +8183,207 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
     }
 
     fileprivate static func escapeDropForShell(_ value: String) -> String {
-        var result = value
-        for char in shellEscapeCharacters {
-            result = result.replacingOccurrences(of: String(char), with: "\\\(char)")
-        }
-        return result
+        TerminalImageTransferPlanner.escapeForShell(value)
     }
 
-    private func droppedContent(from pasteboard: NSPasteboard) -> String? {
-        if let urls = pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL], !urls.isEmpty {
-            return urls
-                .map { Self.escapeDropForShell($0.path) }
-                .joined(separator: " ")
+    static func dropPlanForTesting(
+        pasteboard: NSPasteboard,
+        isRemoteTerminalSurface: Bool
+    ) -> DropPlan {
+        let target: TerminalImageTransferTarget = isRemoteTerminalSurface ? .remote(.workspaceRemote) : .local
+        switch TerminalImageTransferPlanner.plan(
+            pasteboard: pasteboard,
+            mode: .drop,
+            target: target
+        ) {
+        case .insertText(let text):
+            return .insertText(text)
+        case .uploadFiles(let fileURLs, _):
+            return .uploadFiles(fileURLs)
+        case .reject:
+            return .reject
+        }
+    }
+
+    static func performRemoteDropUploadForTesting(
+        upload: (@escaping (Result<[String], Error>) -> Void) -> Void,
+        sendText: @escaping (String) -> Void,
+        onFailure: @escaping () -> Void
+    ) {
+        upload { result in
+            switch result {
+            case .success(let remotePaths):
+                let content = remotePaths
+                    .map { Self.escapeDropForShell($0) }
+                    .joined(separator: " ")
+                guard !content.isEmpty else {
+                    onFailure()
+                    return
+                }
+                sendText(content)
+            case .failure:
+                onFailure()
+            }
+        }
+    }
+
+    @discardableResult
+    static func handleDropForTesting(
+        pasteboard: NSPasteboard,
+        isRemoteTerminalSurface: Bool,
+        uploadRemote: ([URL], @escaping (Result<[String], Error>) -> Void) -> Void,
+        sendText: @escaping (String) -> Void,
+        onFailure: @escaping () -> Void
+    ) -> Bool {
+        let target: TerminalImageTransferTarget = isRemoteTerminalSurface ? .remote(.workspaceRemote) : .local
+        let plan = TerminalImageTransferPlanner.plan(
+            pasteboard: pasteboard,
+            mode: .drop,
+            target: target
+        )
+        guard plan != .reject else { return false }
+
+        TerminalImageTransferPlanner.execute(
+            plan: plan,
+            uploadWorkspaceRemote: { urls, _, finish in
+                uploadRemote(urls) { result in
+                    finish(result)
+                    GhosttyPasteboardHelper.cleanupTransferredTemporaryImageFiles(urls)
+                }
+            },
+            uploadDetectedSSH: { _, _, _, finish in
+                finish(.failure(NSError(domain: "cmux.remote.drop", code: 4)))
+            },
+            insertText: sendText,
+            onFailure: { _ in onFailure() }
+        )
+        return true
+    }
+
+    private func executeImageTransferPlan(
+        _ plan: TerminalImageTransferPlan,
+        operation: TerminalImageTransferOperation? = nil,
+        onCancel: @escaping () -> Void = {}
+    ) -> Bool {
+        guard plan != .reject else { return false }
+
+        let operation = operation ?? {
+            if case .uploadFiles = plan {
+                return TerminalImageTransferOperation()
+            }
+            return nil
+        }()
+
+        if let operation {
+            terminalSurface?.hostedView.beginImageTransferIndicator(
+                for: operation,
+                onCancel: onCancel
+            )
         }
 
-        if let rawURL = pasteboard.string(forType: .URL), !rawURL.isEmpty {
-            return Self.escapeDropForShell(rawURL)
-        }
+        TerminalImageTransferPlanner.execute(
+            plan: plan,
+            operation: operation,
+            uploadWorkspaceRemote: { [weak self] fileURLs, operation, finish in
+                guard let workspace = MainActor.assumeIsolated({
+                    self?.terminalSurface?.owningWorkspace()
+                }) else {
+                    finish(.failure(NSError(domain: "cmux.remote.drop", code: 3)))
+                    GhosttyPasteboardHelper.cleanupTransferredTemporaryImageFiles(fileURLs)
+                    return
+                }
+                workspace.uploadDroppedFilesForRemoteTerminal(
+                    fileURLs,
+                    operation: operation,
+                    completion: { result in
+                        finish(result)
+                        GhosttyPasteboardHelper.cleanupTransferredTemporaryImageFiles(fileURLs)
+                    }
+                )
+            },
+            uploadDetectedSSH: { session, fileURLs, operation, finish in
+                session.uploadDroppedFiles(
+                    fileURLs,
+                    operation: operation,
+                    completion: { result in
+                        finish(result)
+                        GhosttyPasteboardHelper.cleanupTransferredTemporaryImageFiles(fileURLs)
+                    }
+                )
+            },
+            insertText: { [weak self] text in
+                let send = {
+                    if let operation {
+                        self?.terminalSurface?.hostedView.endImageTransferIndicator(for: operation)
+                    }
+                    // Use the text/paste path (ghostty_surface_text) instead of the key event
+                    // path (ghostty_surface_key) so bracketed paste mode is triggered and the
+                    // insertion is instant, matching upstream Ghostty behaviour.
+                    self?.terminalSurface?.sendText(text)
+                }
+                if Thread.isMainThread {
+                    send()
+                } else {
+                    DispatchQueue.main.async(execute: send)
+                }
+            },
+            onFailure: { [weak self] _ in
+                if let operation {
+                    self?.terminalSurface?.hostedView.endImageTransferIndicator(for: operation)
+                }
+                DispatchQueue.main.async {
+                    NSSound.beep()
+#if DEBUG
+                    dlog("terminal.remoteDropUpload.failed surface=\(self?.terminalSurface?.id.uuidString.prefix(5) ?? "nil")")
+#endif
+                }
+            }
+        )
+        return true
+    }
 
-        if let str = pasteboard.string(forType: .string), !str.isEmpty {
-            return str
+    private func resolvedImageTransferTarget() -> TerminalImageTransferTarget {
+        MainActor.assumeIsolated {
+            terminalSurface?.resolvedImageTransferTarget() ?? .local
         }
+    }
 
-        return nil
+    fileprivate func handleDroppedFileURLs(_ urls: [URL]) -> Bool {
+        executePreparedImageTransfer(
+            .fileURLs(urls),
+            onCancel: {}
+        )
     }
 
     @discardableResult
     fileprivate func insertDroppedPasteboard(_ pasteboard: NSPasteboard) -> Bool {
-        guard let content = droppedContent(from: pasteboard) else { return false }
-        // Use the text/paste path (ghostty_surface_text) instead of the key event
-        // path (ghostty_surface_key) so bracketed paste mode is triggered and the
-        // insertion is instant, matching upstream Ghostty behaviour.
-        terminalSurface?.sendText(content)
-        return true
+        executePreparedImageTransfer(
+            TerminalImageTransferPlanner.prepare(
+                pasteboard: pasteboard,
+                mode: .drop
+            ),
+            onCancel: {}
+        )
+    }
+
+    @discardableResult
+    private func executePreparedImageTransfer(
+        _ preparedContent: TerminalImageTransferPreparedContent,
+        onCancel: @escaping () -> Void
+    ) -> Bool {
+        switch preparedContent {
+        case .reject:
+            return false
+        case .insertText(let text):
+            terminalSurface?.sendText(text)
+            return true
+        case .fileURLs(let fileURLs):
+            let plan = TerminalImageTransferPlanner.plan(
+                fileURLs: fileURLs,
+                target: resolvedImageTransferTarget()
+            )
+            return executeImageTransferPlan(plan, onCancel: onCancel)
+        }
     }
 
 #if DEBUG
@@ -5908,6 +8474,7 @@ enum GhosttyNotificationKey {
 extension Notification.Name {
     static let ghosttyDidUpdateScrollbar = Notification.Name("ghosttyDidUpdateScrollbar")
     static let ghosttyDidUpdateCellSize = Notification.Name("ghosttyDidUpdateCellSize")
+    static let ghosttyDidReceiveWheelScroll = Notification.Name("ghosttyDidReceiveWheelScroll")
     static let ghosttySearchFocus = Notification.Name("ghosttySearchFocus")
     static let ghosttyConfigDidReload = Notification.Name("ghosttyConfigDidReload")
     static let ghosttyDefaultBackgroundDidChange = Notification.Name("ghosttyDefaultBackgroundDidChange")
@@ -5959,20 +8526,52 @@ func shouldAllowEnsureFocusWindowActivation(
     activeTabManager: TabManager?,
     targetTabManager: TabManager,
     keyWindow: NSWindow?,
-    mainWindow: NSWindow?
+    mainWindow: NSWindow?,
+    targetWindow: NSWindow
 ) -> Bool {
-    activeTabManager === targetTabManager || (keyWindow == nil && mainWindow == nil)
+    guard activeTabManager === targetTabManager || (keyWindow == nil && mainWindow == nil) else {
+        return false
+    }
+
+    if let keyWindow {
+        return keyWindow === targetWindow
+    }
+
+    if let mainWindow {
+        return mainWindow === targetWindow
+    }
+
+    return true
 }
 
 final class GhosttySurfaceScrollView: NSView {
     enum FlashStyle {
-        case standardFocus
-        case notificationDismiss
+        case navigation
+        case notification
+    }
+
+    static func flashStyle(for reason: WorkspaceAttentionFlashReason) -> FlashStyle {
+        switch reason {
+        case .navigation:
+            return .navigation
+        case .notificationArrival, .notificationDismiss, .manualUnreadDismiss, .debug:
+            return .notification
+        }
+    }
+
+    private static func flashPresentation(for style: FlashStyle) -> WorkspaceAttentionFlashPresentation {
+        switch style {
+        case .navigation:
+            return WorkspaceAttentionCoordinator.flashStyle(for: .navigation)
+        case .notification:
+            return WorkspaceAttentionCoordinator.flashStyle(for: .notificationArrival)
+        }
     }
 
     private enum NotificationRingMetrics {
-        static let inset: CGFloat = 2
-        static let cornerRadius: CGFloat = 6
+        static let inset = PanelOverlayRingMetrics.inset
+        static let cornerRadius = PanelOverlayRingMetrics.cornerRadius
+        static let lineWidth = PanelOverlayRingMetrics.lineWidth
     }
 
     private let backgroundView: NSView
@@ -5985,21 +8584,41 @@ final class GhosttySurfaceScrollView: NSView {
     private let notificationRingLayer: CAShapeLayer
     private let flashOverlayView: GhosttyFlashOverlayView
     private let flashLayer: CAShapeLayer
+    private var lastFlashStyle: FlashStyle = .navigation
     private let keyboardCopyModeBadgeContainerView: GhosttyFlashOverlayView
     private let keyboardCopyModeBadgeView: GhosttyPassthroughVisualEffectView
     private let keyboardCopyModeBadgeIconView: NSImageView
     private let keyboardCopyModeBadgeLabel: NSTextField
+    private let imageTransferIndicatorContainerView: NSView
+    private let imageTransferIndicatorView: NSVisualEffectView
+    private let imageTransferIndicatorSpinner: NSProgressIndicator
+    private let imageTransferCancelButton: NSButton
     private var searchOverlayHostingView: NSHostingView<SurfaceSearchOverlay>?
+    private var deferredSearchOverlayMutationWorkItem: DispatchWorkItem?
+    private var imageTransferIndicatorShowWorkItem: DispatchWorkItem?
+    private var activeImageTransferOperation: TerminalImageTransferOperation?
+    private var activeImageTransferCancelHandler: (() -> Void)?
     private var lastSearchOverlayStateID: ObjectIdentifier?
+    private var searchOverlayMutationGeneration: UInt64 = 0
     private var observers: [NSObjectProtocol] = []
     private var windowObservers: [NSObjectProtocol] = []
     private var isLiveScrolling = false
     private var lastSentRow: Int?
+    /// Tracks whether the user has scrolled away from the bottom to review scrollback.
+    /// When true, auto-scroll should be suspended to prevent the "doomscroll" bug
+    /// where the terminal fights the user's scroll position.
+    private var userScrolledAwayFromBottom = false
+    private var pendingExplicitWheelScroll = false
+    private var allowExplicitScrollbarSync = false
+    /// Threshold in points from bottom to consider "at bottom" (allows for minor float drift)
+    private static let scrollToBottomThreshold: CGFloat = 5.0
     private var isActive = true
     private var lastFocusRefreshAt: CFTimeInterval = 0
+    private var lastRequestedPortalOcclusionVisible: Bool?
     private var activeDropZone: DropZone?
     private var pendingDropZone: DropZone?
     private var dropZoneOverlayAnimationGeneration: UInt64 = 0
+    private var pendingAutomaticFirstResponderApply = false
     // Intentionally no focus retry loops: rely on AppKit first-responder and bonsplit selection.
 
     /// Tracks whether keyboard focus should go to the search field or the terminal
@@ -6010,11 +8629,6 @@ final class GhosttySurfaceScrollView: NSView {
     }
     private(set) var searchFocusTarget: SearchFocusTarget = .searchField
 
-    private static func panelBackgroundFillColor(for terminalBackgroundColor: NSColor) -> NSColor {
-        // The Ghostty renderer already draws translucent terminal backgrounds. If we paint an
-        // additional translucent layer here, alpha stacks and appears effectively opaque.
-        terminalBackgroundColor.alphaComponent < 0.999 ? .clear : terminalBackgroundColor
-    }
 
 #if DEBUG
     private var lastDropZoneOverlayLogSignature: String?
@@ -6126,6 +8740,33 @@ final class GhosttySurfaceScrollView: NSView {
     var debugSurfaceId: UUID? {
         surfaceView.terminalSurface?.id
     }
+
+    var debugCellSize: CGSize {
+        surfaceView.cellSize
+    }
+
+    private func debugPointInSurface(_ point: NSPoint) -> NSPoint {
+        surfaceView.convert(point, from: self)
+    }
+
+    func debugSimulateSelection(from startPoint: NSPoint, to endPoint: NSPoint) -> Bool {
+        surfaceView.debugSimulateSelection(
+            from: debugPointInSurface(startPoint),
+            to: debugPointInSurface(endPoint)
+        )
+    }
+
+    func debugSimulateCommandHover(at point: NSPoint) -> Bool {
+        surfaceView.debugSimulateCommandHover(at: debugPointInSurface(point))
+    }
+
+    func debugSimulateCommandHoverDetails(at point: NSPoint) -> [String: Any] {
+        surfaceView.debugSimulateCommandHoverDetails(at: debugPointInSurface(point))
+    }
+
+    func debugSimulateCommandClick(at point: NSPoint) -> [String: Any] {
+        surfaceView.debugSimulateCommandClick(at: debugPointInSurface(point))
+    }
 #endif
 
     func portalBindingGuardState() -> (surfaceId: UUID?, generation: UInt64?, state: String) {
@@ -6154,6 +8795,13 @@ final class GhosttySurfaceScrollView: NSView {
         )
     }
 
+    func prepareOwnedPortalHostForTransientReattach(hostId: ObjectIdentifier, reason: String) {
+        surfaceView.terminalSurface?.preparePortalHostReplacementIfOwned(
+            hostId: hostId,
+            reason: reason
+        )
+    }
+
     init(surfaceView: GhosttyNSView) {
         self.surfaceView = surfaceView
         backgroundView = NSView(frame: .zero)
@@ -6168,6 +8816,10 @@ final class GhosttySurfaceScrollView: NSView {
         keyboardCopyModeBadgeView = GhosttyPassthroughVisualEffectView(frame: .zero)
         keyboardCopyModeBadgeIconView = NSImageView(frame: .zero)
         keyboardCopyModeBadgeLabel = NSTextField(labelWithString: terminalKeyboardCopyModeIndicatorText)
+        imageTransferIndicatorContainerView = NSView(frame: .zero)
+        imageTransferIndicatorView = NSVisualEffectView(frame: .zero)
+        imageTransferIndicatorSpinner = NSProgressIndicator(frame: .zero)
+        imageTransferCancelButton = NSButton(frame: .zero)
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = false
@@ -6191,9 +8843,8 @@ final class GhosttySurfaceScrollView: NSView {
         backgroundView.wantsLayer = true
         let initialTerminalBackground = GhosttyApp.shared.defaultBackgroundColor
             .withAlphaComponent(GhosttyApp.shared.defaultBackgroundOpacity)
-        let initialPanelFill = Self.panelBackgroundFillColor(for: initialTerminalBackground)
-        backgroundView.layer?.backgroundColor = initialPanelFill.cgColor
-        backgroundView.layer?.isOpaque = initialPanelFill.alphaComponent >= 1.0
+        backgroundView.layer?.backgroundColor = initialTerminalBackground.cgColor
+        backgroundView.layer?.isOpaque = initialTerminalBackground.alphaComponent >= 1.0
         addSubview(backgroundView)
         addSubview(scrollView)
         inactiveOverlayView.wantsLayer = true
@@ -6212,7 +8863,7 @@ final class GhosttySurfaceScrollView: NSView {
         notificationRingOverlayView.autoresizingMask = [.width, .height]
         notificationRingLayer.fillColor = NSColor.clear.cgColor
         notificationRingLayer.strokeColor = NSColor.systemBlue.cgColor
-        notificationRingLayer.lineWidth = 2.5
+        notificationRingLayer.lineWidth = NotificationRingMetrics.lineWidth
         notificationRingLayer.lineJoin = .round
         notificationRingLayer.lineCap = .round
         notificationRingLayer.shadowColor = NSColor.systemBlue.cgColor
@@ -6228,13 +8879,13 @@ final class GhosttySurfaceScrollView: NSView {
         flashOverlayView.layer?.masksToBounds = false
         flashOverlayView.autoresizingMask = [.width, .height]
         flashLayer.fillColor = NSColor.clear.cgColor
-        flashLayer.strokeColor = NSColor.systemBlue.cgColor
-        flashLayer.lineWidth = 3
+        flashLayer.strokeColor = WorkspaceAttentionCoordinator.flashStyle(for: .navigation).accent.strokeColor.cgColor
+        flashLayer.lineWidth = NotificationRingMetrics.lineWidth
         flashLayer.lineJoin = .round
         flashLayer.lineCap = .round
-        flashLayer.shadowColor = NSColor.systemBlue.cgColor
-        flashLayer.shadowOpacity = 0.6
-        flashLayer.shadowRadius = 6
+        flashLayer.shadowColor = WorkspaceAttentionCoordinator.flashStyle(for: .navigation).accent.strokeColor.cgColor
+        flashLayer.shadowOpacity = Float(WorkspaceAttentionCoordinator.flashStyle(for: .navigation).glowOpacity)
+        flashLayer.shadowRadius = WorkspaceAttentionCoordinator.flashStyle(for: .navigation).glowRadius
         flashLayer.shadowOffset = .zero
         flashLayer.opacity = 0
         flashOverlayView.layer?.addSublayer(flashLayer)
@@ -6298,6 +8949,71 @@ final class GhosttySurfaceScrollView: NSView {
             keyboardCopyModeBadgeContainerView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
         ])
 
+        imageTransferIndicatorContainerView.translatesAutoresizingMaskIntoConstraints = false
+        imageTransferIndicatorContainerView.wantsLayer = true
+        imageTransferIndicatorContainerView.layer?.masksToBounds = false
+        imageTransferIndicatorContainerView.layer?.shadowColor = NSColor.black.cgColor
+        imageTransferIndicatorContainerView.layer?.shadowOpacity = 0.18
+        imageTransferIndicatorContainerView.layer?.shadowRadius = 8
+        imageTransferIndicatorContainerView.layer?.shadowOffset = CGSize(width: 0, height: 2)
+        imageTransferIndicatorView.translatesAutoresizingMaskIntoConstraints = false
+        imageTransferIndicatorView.wantsLayer = true
+        imageTransferIndicatorView.material = .hudWindow
+        imageTransferIndicatorView.blendingMode = .withinWindow
+        imageTransferIndicatorView.state = .active
+        imageTransferIndicatorView.layer?.cornerRadius = 16
+        imageTransferIndicatorView.layer?.masksToBounds = true
+        imageTransferIndicatorView.layer?.borderWidth = 1
+        imageTransferIndicatorView.layer?.borderColor = NSColor.white.withAlphaComponent(0.12).cgColor
+        imageTransferIndicatorView.alphaValue = 0.95
+        imageTransferIndicatorSpinner.translatesAutoresizingMaskIntoConstraints = false
+        imageTransferIndicatorSpinner.style = .spinning
+        imageTransferIndicatorSpinner.controlSize = .small
+        imageTransferIndicatorSpinner.isDisplayedWhenStopped = false
+        imageTransferCancelButton.translatesAutoresizingMaskIntoConstraints = false
+        imageTransferCancelButton.isBordered = false
+        imageTransferCancelButton.imagePosition = .imageOnly
+        imageTransferCancelButton.image = NSImage(
+            systemSymbolName: "xmark.circle.fill",
+            accessibilityDescription: String(localized: "common.cancel", defaultValue: "Cancel")
+        )
+        imageTransferCancelButton.contentTintColor = NSColor.secondaryLabelColor
+        imageTransferCancelButton.toolTip = String(localized: "common.cancel", defaultValue: "Cancel")
+        imageTransferCancelButton.setAccessibilityLabel(
+            String(localized: "common.cancel", defaultValue: "Cancel")
+        )
+        imageTransferCancelButton.target = self
+        imageTransferCancelButton.action = #selector(handleImageTransferCancel)
+        imageTransferIndicatorContainerView.addSubview(imageTransferIndicatorView)
+        imageTransferIndicatorView.addSubview(imageTransferIndicatorSpinner)
+        imageTransferIndicatorView.addSubview(imageTransferCancelButton)
+        NSLayoutConstraint.activate([
+            imageTransferIndicatorView.topAnchor.constraint(equalTo: imageTransferIndicatorContainerView.topAnchor),
+            imageTransferIndicatorView.bottomAnchor.constraint(equalTo: imageTransferIndicatorContainerView.bottomAnchor),
+            imageTransferIndicatorView.leadingAnchor.constraint(equalTo: imageTransferIndicatorContainerView.leadingAnchor),
+            imageTransferIndicatorView.trailingAnchor.constraint(equalTo: imageTransferIndicatorContainerView.trailingAnchor),
+            imageTransferIndicatorSpinner.leadingAnchor.constraint(equalTo: imageTransferIndicatorView.leadingAnchor, constant: 10),
+            imageTransferIndicatorSpinner.centerYAnchor.constraint(equalTo: imageTransferIndicatorView.centerYAnchor),
+            imageTransferIndicatorSpinner.widthAnchor.constraint(equalToConstant: 14),
+            imageTransferIndicatorSpinner.heightAnchor.constraint(equalToConstant: 14),
+            imageTransferCancelButton.leadingAnchor.constraint(equalTo: imageTransferIndicatorSpinner.trailingAnchor, constant: 6),
+            imageTransferCancelButton.trailingAnchor.constraint(equalTo: imageTransferIndicatorView.trailingAnchor, constant: -8),
+            imageTransferCancelButton.centerYAnchor.constraint(equalTo: imageTransferIndicatorView.centerYAnchor),
+            imageTransferCancelButton.widthAnchor.constraint(equalToConstant: 16),
+            imageTransferCancelButton.heightAnchor.constraint(equalToConstant: 16),
+            imageTransferIndicatorSpinner.topAnchor.constraint(equalTo: imageTransferIndicatorView.topAnchor, constant: 8),
+            imageTransferIndicatorSpinner.bottomAnchor.constraint(equalTo: imageTransferIndicatorView.bottomAnchor, constant: -8),
+        ])
+        imageTransferIndicatorContainerView.isHidden = true
+        addSubview(imageTransferIndicatorContainerView)
+        NSLayoutConstraint.activate([
+            imageTransferIndicatorContainerView.topAnchor.constraint(
+                equalTo: keyboardCopyModeBadgeContainerView.bottomAnchor,
+                constant: 8
+            ),
+            imageTransferIndicatorContainerView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+        ])
+
         scrollView.contentView.postsBoundsChangedNotifications = true
         observers.append(NotificationCenter.default.addObserver(
             forName: NSView.boundsDidChangeNotification,
@@ -6321,6 +9037,8 @@ final class GhosttySurfaceScrollView: NSView {
             queue: .main
         ) { [weak self] _ in
             self?.isLiveScrolling = false
+            // Final scroll position check to update userScrolledAwayFromBottom state
+            self?.handleLiveScroll()
         })
 
         observers.append(NotificationCenter.default.addObserver(
@@ -6337,6 +9055,32 @@ final class GhosttySurfaceScrollView: NSView {
             queue: .main
         ) { [weak self] notification in
             self?.handleScrollbarUpdate(notification)
+        })
+
+        observers.append(NotificationCenter.default.addObserver(
+            forName: .terminalSurfaceDidBecomeReady,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self,
+                  let readySurfaceId = notification.userInfo?["surfaceId"] as? UUID,
+                  readySurfaceId == self.surfaceView.terminalSurface?.id else {
+                return
+            }
+            // Session restore can request focus before the runtime surface exists.
+            // Re-run the normal first-responder/focus path once the surface is live.
+            guard self.isActive || self.surfaceView.desiredFocus || self.isSurfaceViewFirstResponder() else {
+                return
+            }
+            self.scheduleAutomaticFirstResponderApply(reason: "surfaceDidBecomeReady")
+        })
+
+        observers.append(NotificationCenter.default.addObserver(
+            forName: .ghosttyDidReceiveWheelScroll,
+            object: surfaceView,
+            queue: .main
+        ) { [weak self] _ in
+            self?.pendingExplicitWheelScroll = true
         })
 
         observers.append(NotificationCenter.default.addObserver(
@@ -6360,6 +9104,17 @@ final class GhosttySurfaceScrollView: NSView {
         ) { [weak self] _ in
             self?.synchronizeScrollView()
         })
+
+        observers.append(NotificationCenter.default.addObserver(
+            forName: NSScroller.preferredScrollerStyleDidChangeNotification,
+            object: nil,
+            // Match AppKit's geometry change immediately so the terminal width
+            // does not stay stuck behind a legacy scrollbar gutter.
+            queue: nil
+        ) { [weak self] _ in
+            self?.handlePreferredScrollerStyleChange()
+        })
+
     }
 
     required init?(coder: NSCoder) {
@@ -6376,6 +9131,8 @@ final class GhosttySurfaceScrollView: NSView {
 #endif
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         windowObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        deferredSearchOverlayMutationWorkItem?.cancel()
+        imageTransferIndicatorShowWorkItem?.cancel()
         dropZoneOverlayView.removeFromSuperview()
         cancelFocusRequest()
     }
@@ -6462,8 +9219,15 @@ final class GhosttySurfaceScrollView: NSView {
         }
         _ = setFrameIfNeeded(notificationRingOverlayView, to: bounds)
         _ = setFrameIfNeeded(flashOverlayView, to: bounds)
+        if let overlay = searchOverlayHostingView {
+            _ = setFrameIfNeeded(overlay, to: bounds)
+        }
+        // NSScrollView can defer clip-view/content-size updates until its own layout pass,
+        // which makes interactive width changes arrive a queue turn late on Sequoia.
+        scrollView.layoutSubtreeIfNeeded()
         updateNotificationRingPath()
-        updateFlashPath(style: .standardFocus)
+        updateFlashPath(style: lastFlashStyle)
+        updateFlashAppearance(style: lastFlashStyle)
         synchronizeScrollView()
         synchronizeSurfaceView()
         let didCoreSurfaceChange = synchronizeCoreSurface()
@@ -6607,7 +9371,7 @@ final class GhosttySurfaceScrollView: NSView {
 #if DEBUG
             dlog("find.window.didBecomeKey surface=\(self.surfaceView.terminalSurface?.id.uuidString.prefix(5) ?? "nil") searchActive=\(searchActive) focusTarget=\(self.searchFocusTarget) firstResponder=\(String(describing: self.window?.firstResponder))")
 #endif
-            self.applyFirstResponderIfNeeded()
+            self.scheduleAutomaticFirstResponderApply(reason: "didBecomeKey")
         })
         windowObservers.append(NotificationCenter.default.addObserver(
             forName: NSWindow.didResignKeyNotification,
@@ -6630,7 +9394,9 @@ final class GhosttySurfaceScrollView: NSView {
 #endif
             }
         })
-        if window.isKeyWindow { applyFirstResponderIfNeeded() }
+        if window.isKeyWindow {
+            scheduleAutomaticFirstResponderApply(reason: "viewDidMoveToWindow")
+        }
     }
 
     func attachSurface(_ terminalSurface: TerminalSurface) {
@@ -6662,11 +9428,10 @@ final class GhosttySurfaceScrollView: NSView {
 
     func setBackgroundColor(_ color: NSColor) {
         guard let layer = backgroundView.layer else { return }
-        let fillColor = Self.panelBackgroundFillColor(for: color)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        layer.backgroundColor = fillColor.cgColor
-        layer.isOpaque = fillColor.alphaComponent >= 1.0
+        layer.backgroundColor = color.cgColor
+        layer.isOpaque = color.alphaComponent >= 1.0
         CATransaction.commit()
     }
 
@@ -6699,51 +9464,128 @@ final class GhosttySurfaceScrollView: NSView {
         CATransaction.commit()
     }
 
-    func setSearchOverlay(searchState: TerminalSurface.SearchState?) {
+    private func cancelDeferredSearchOverlayMutation() {
+        deferredSearchOverlayMutationWorkItem?.cancel()
+        deferredSearchOverlayMutationWorkItem = nil
+    }
+
+    private func scheduleDeferredSearchOverlayMutation(
+        generation: UInt64,
+        _ mutation: @escaping () -> Void
+    ) {
+        cancelDeferredSearchOverlayMutation()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard self.searchOverlayMutationGeneration == generation else { return }
+            self.deferredSearchOverlayMutationWorkItem = nil
+            mutation()
+        }
+        deferredSearchOverlayMutationWorkItem = work
+        DispatchQueue.main.async(execute: work)
+    }
+
+    private func cancelImageTransferIndicatorShow() {
+        imageTransferIndicatorShowWorkItem?.cancel()
+        imageTransferIndicatorShowWorkItem = nil
+    }
+
+    private func updateImageTransferIndicatorZOrder(relativeTo overlay: NSView?) {
+        guard !imageTransferIndicatorContainerView.isHidden else { return }
+        if let overlay, overlay.superview === self {
+            addSubview(imageTransferIndicatorContainerView, positioned: .above, relativeTo: overlay)
+            return
+        }
+        if keyboardCopyModeBadgeContainerView.superview === self,
+           !keyboardCopyModeBadgeContainerView.isHidden {
+            addSubview(
+                imageTransferIndicatorContainerView,
+                positioned: .above,
+                relativeTo: keyboardCopyModeBadgeContainerView
+            )
+            return
+        }
+        addSubview(imageTransferIndicatorContainerView, positioned: .above, relativeTo: nil)
+    }
+
+    private func updateKeyboardCopyModeBadgeZOrder(relativeTo overlay: NSView?) {
+        guard !keyboardCopyModeBadgeContainerView.isHidden else { return }
+        if let overlay, overlay.superview === self {
+            addSubview(keyboardCopyModeBadgeContainerView, positioned: .above, relativeTo: overlay)
+        } else {
+            addSubview(keyboardCopyModeBadgeContainerView, positioned: .above, relativeTo: nil)
+        }
+        updateImageTransferIndicatorZOrder(relativeTo: overlay)
+    }
+
+    @objc private func handleImageTransferCancel() {
+        guard let operation = activeImageTransferOperation else { return }
+        let onCancel = activeImageTransferCancelHandler
+        guard operation.cancel() else { return }
+        endImageTransferIndicator(for: operation)
+        onCancel?()
+    }
+
+    func beginImageTransferIndicator(
+        for operation: TerminalImageTransferOperation,
+        onCancel: @escaping () -> Void
+    ) {
         if !Thread.isMainThread {
             DispatchQueue.main.async { [weak self] in
-                self?.setSearchOverlay(searchState: searchState)
+                self?.beginImageTransferIndicator(for: operation, onCancel: onCancel)
             }
             return
         }
 
-        // Layering contract: keep terminal Cmd+F UI inside this portal-hosted AppKit view.
-        // SwiftUI panel-level overlays can fall behind portal-hosted terminal surfaces.
-        guard let terminalSurface = surfaceView.terminalSurface,
-              let searchState else {
-            let hadOverlay = searchOverlayHostingView != nil
-            lastSearchOverlayStateID = nil
-            guard hadOverlay else { return }
-#if DEBUG
-            dlog("find.setSearchOverlay REMOVE surface=\(surfaceView.terminalSurface?.id.uuidString.prefix(5) ?? "nil") hadOverlay=\(hadOverlay)")
-#endif
-            searchOverlayHostingView?.removeFromSuperview()
-            searchOverlayHostingView = nil
-            searchFocusTarget = .searchField
-            return
-        }
+        cancelImageTransferIndicatorShow()
+        activeImageTransferOperation = operation
+        activeImageTransferCancelHandler = onCancel
+        imageTransferIndicatorSpinner.stopAnimation(nil)
+        imageTransferIndicatorContainerView.isHidden = true
 
-        let searchStateID = ObjectIdentifier(searchState)
-        if let overlay = searchOverlayHostingView,
-           lastSearchOverlayStateID == searchStateID,
-           overlay.superview === self {
-            if !keyboardCopyModeBadgeContainerView.isHidden {
-                addSubview(keyboardCopyModeBadgeContainerView, positioned: .above, relativeTo: overlay)
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard self.activeImageTransferOperation === operation else { return }
+            guard !operation.isCancelled else { return }
+            self.imageTransferIndicatorShowWorkItem = nil
+            self.imageTransferIndicatorSpinner.startAnimation(nil)
+            self.imageTransferIndicatorContainerView.isHidden = false
+            self.updateImageTransferIndicatorZOrder(relativeTo: self.searchOverlayHostingView)
+        }
+        imageTransferIndicatorShowWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+    }
+
+    func endImageTransferIndicator(for operation: TerminalImageTransferOperation?) {
+        if !Thread.isMainThread {
+            DispatchQueue.main.async { [weak self] in
+                self?.endImageTransferIndicator(for: operation)
             }
             return
         }
 
-        let hadOverlay = searchOverlayHostingView != nil
-#if DEBUG
-        dlog("find.setSearchOverlay MOUNT surface=\(terminalSurface.id.uuidString.prefix(5)) existingOverlay=\(hadOverlay ? "yes(update)" : "no(create)")")
-#endif
+        if let operation,
+           activeImageTransferOperation !== operation {
+            return
+        }
 
-        let tabId = terminalSurface.tabId
-        let surfaceId = terminalSurface.id
-        let rootView = SurfaceSearchOverlay(
-            tabId: tabId,
-            surfaceId: surfaceId,
+        cancelImageTransferIndicatorShow()
+        activeImageTransferOperation = nil
+        activeImageTransferCancelHandler = nil
+        imageTransferIndicatorSpinner.stopAnimation(nil)
+        imageTransferIndicatorContainerView.isHidden = true
+    }
+
+    private func makeSearchOverlayRootView(
+        terminalSurface: TerminalSurface,
+        searchState: TerminalSurface.SearchState
+    ) -> SurfaceSearchOverlay {
+        SurfaceSearchOverlay(
+            tabId: terminalSurface.tabId,
+            surfaceId: terminalSurface.id,
             searchState: searchState,
+            canApplyFocusRequest: { [weak self] in
+                self?.canApplyMountedSearchFieldFocusRequest() ?? false
+            },
             onMoveFocusToTerminal: { [weak self] in
                 self?.searchFocusTarget = .terminal
                 self?.moveFocus()
@@ -6760,41 +9602,215 @@ final class GhosttySurfaceScrollView: NSView {
                 self?.moveFocus()
             }
         )
+    }
+
+    private func findEditableSearchField(in view: NSView?) -> NSTextField? {
+        guard let view else { return nil }
+        if let field = view as? NSTextField, field.isEditable {
+            return field
+        }
+        for subview in view.subviews {
+            if let field = findEditableSearchField(in: subview) {
+                return field
+            }
+        }
+        return nil
+    }
+
+    private func mountedSearchFieldIfAvailable() -> NSTextField? {
+        guard let overlay = searchOverlayHostingView,
+              overlay.superview === self else {
+            return nil
+        }
+        return findEditableSearchField(in: overlay)
+    }
+
+    private func mountedSearchFieldOwnsResponder(
+        _ responder: NSResponder?,
+        field: NSTextField? = nil
+    ) -> Bool {
+        guard let responder else { return false }
+        guard let field = field ?? mountedSearchFieldIfAvailable() else { return false }
+        return responder === field || field.currentEditor() === responder
+    }
+
+    private func resolvedKeyboardFocusOwnerView(for responder: NSResponder?) -> NSView? {
+        guard let responder else { return nil }
+
+        let mountedSearchField = mountedSearchFieldIfAvailable()
+        if mountedSearchFieldOwnsResponder(responder, field: mountedSearchField) {
+            return mountedSearchField
+        }
+
+        if let editor = responder as? NSTextView,
+           editor.isFieldEditor {
+            var current = editor.nextResponder
+            while let next = current {
+                if let view = next as? NSView {
+                    return view
+                }
+                current = next.nextResponder
+            }
+            return editor.superview ?? editor
+        }
+
+        return responder as? NSView
+    }
+
+    private func canApplyMountedSearchFieldFocusRequest() -> Bool {
+        guard let terminalSurface = surfaceView.terminalSurface,
+              let app = AppDelegate.shared,
+              let manager = app.tabManagerFor(tabId: terminalSurface.tabId),
+              manager.selectedTabId == terminalSurface.tabId,
+              let workspace = manager.tabs.first(where: { $0.id == terminalSurface.tabId }) else {
+            return false
+        }
+        return workspace.focusedPanelId == terminalSurface.id
+    }
+
+    private func requestMountedSearchFieldFocus(
+        generation: UInt64,
+        force: Bool,
+        attemptsRemaining: Int = 4
+    ) {
+        guard searchOverlayMutationGeneration == generation else { return }
+        guard force || searchFocusTarget == .searchField else { return }
+        guard canApplyMountedSearchFieldFocusRequest() else { return }
+        guard let overlay = searchOverlayHostingView,
+              overlay.superview === self,
+              let window,
+              window.isKeyWindow else { return }
+
+        guard let field = findEditableSearchField(in: overlay) else {
+            guard attemptsRemaining > 0 else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
+                self?.requestMountedSearchFieldFocus(
+                    generation: generation,
+                    force: force,
+                    attemptsRemaining: attemptsRemaining - 1
+                )
+            }
+            return
+        }
+
+        let firstResponder = window.firstResponder
+        let alreadyFocused = mountedSearchFieldOwnsResponder(firstResponder, field: field)
+        guard !alreadyFocused else { return }
+
+        surfaceView.terminalSurface?.setFocus(false)
+        let result = window.makeFirstResponder(field)
+#if DEBUG
+        dlog(
+            "find.mountedFieldFocus surface=\(surfaceView.terminalSurface?.id.uuidString.prefix(5) ?? "nil") " +
+            "result=\(result ? 1 : 0) attemptsRemaining=\(attemptsRemaining) " +
+            "firstResponder=\(String(describing: window.firstResponder))"
+        )
+#endif
+        guard !result, attemptsRemaining > 0 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
+            self?.requestMountedSearchFieldFocus(
+                generation: generation,
+                force: force,
+                attemptsRemaining: attemptsRemaining - 1
+            )
+        }
+    }
+
+    func setSearchOverlay(searchState: TerminalSurface.SearchState?) {
+        if !Thread.isMainThread {
+            DispatchQueue.main.async { [weak self] in
+                self?.setSearchOverlay(searchState: searchState)
+            }
+            return
+        }
+
+        searchOverlayMutationGeneration &+= 1
+        let mutationGeneration = searchOverlayMutationGeneration
+
+        // Layering contract: keep terminal Cmd+F UI inside this portal-hosted AppKit view.
+        // SwiftUI panel-level overlays can fall behind portal-hosted terminal surfaces.
+        guard let terminalSurface = surfaceView.terminalSurface,
+              let searchState else {
+            let hadOverlay = searchOverlayHostingView != nil
+            lastSearchOverlayStateID = nil
+            searchFocusTarget = .searchField
+            guard hadOverlay else {
+                cancelDeferredSearchOverlayMutation()
+                return
+            }
+#if DEBUG
+            dlog("find.setSearchOverlay REMOVE surface=\(surfaceView.terminalSurface?.id.uuidString.prefix(5) ?? "nil") hadOverlay=\(hadOverlay)")
+#endif
+            scheduleDeferredSearchOverlayMutation(generation: mutationGeneration) { [weak self] in
+                self?.searchOverlayHostingView?.removeFromSuperview()
+                self?.searchOverlayHostingView = nil
+            }
+            return
+        }
+
+        let searchStateID = ObjectIdentifier(searchState)
+        if let overlay = searchOverlayHostingView,
+           lastSearchOverlayStateID == searchStateID,
+           overlay.superview === self {
+            cancelDeferredSearchOverlayMutation()
+            _ = setFrameIfNeeded(overlay, to: bounds)
+            updateKeyboardCopyModeBadgeZOrder(relativeTo: overlay)
+            return
+        }
+
+        let hadOverlay = searchOverlayHostingView != nil
+#if DEBUG
+        dlog("find.setSearchOverlay MOUNT surface=\(terminalSurface.id.uuidString.prefix(5)) existingOverlay=\(hadOverlay ? "yes(update)" : "no(create)")")
+#endif
+
+        let rootView = makeSearchOverlayRootView(
+            terminalSurface: terminalSurface,
+            searchState: searchState
+        )
 
         if let overlay = searchOverlayHostingView {
             overlay.rootView = rootView
-            if overlay.superview !== self {
-                overlay.removeFromSuperview()
-                addSubview(overlay)
-                NSLayoutConstraint.activate([
-                    overlay.topAnchor.constraint(equalTo: topAnchor),
-                    overlay.bottomAnchor.constraint(equalTo: bottomAnchor),
-                    overlay.leadingAnchor.constraint(equalTo: leadingAnchor),
-                    overlay.trailingAnchor.constraint(equalTo: trailingAnchor),
-                ])
-            }
-            if !keyboardCopyModeBadgeContainerView.isHidden {
-                addSubview(keyboardCopyModeBadgeContainerView, positioned: .above, relativeTo: overlay)
-            }
             lastSearchOverlayStateID = searchStateID
+            if overlay.superview !== self {
+                scheduleDeferredSearchOverlayMutation(generation: mutationGeneration) { [weak self, weak overlay] in
+                    guard let self, let overlay else { return }
+                    overlay.removeFromSuperview()
+                    overlay.frame = self.bounds
+                    overlay.autoresizingMask = [.width, .height]
+                    self.addSubview(overlay)
+                    self.updateKeyboardCopyModeBadgeZOrder(relativeTo: overlay)
+                    self.requestMountedSearchFieldFocus(
+                        generation: mutationGeneration,
+                        force: false
+                    )
+                }
+                return
+            }
+            cancelDeferredSearchOverlayMutation()
+            _ = setFrameIfNeeded(overlay, to: bounds)
+            updateKeyboardCopyModeBadgeZOrder(relativeTo: overlay)
             return
         }
 
         searchFocusTarget = .searchField
         let overlay = NSHostingView(rootView: rootView)
-        overlay.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(overlay)
-        NSLayoutConstraint.activate([
-            overlay.topAnchor.constraint(equalTo: topAnchor),
-            overlay.bottomAnchor.constraint(equalTo: bottomAnchor),
-            overlay.leadingAnchor.constraint(equalTo: leadingAnchor),
-            overlay.trailingAnchor.constraint(equalTo: trailingAnchor),
-        ])
-        if !keyboardCopyModeBadgeContainerView.isHidden {
-            addSubview(keyboardCopyModeBadgeContainerView, positioned: .above, relativeTo: overlay)
-        }
+        overlay.frame = bounds
+        overlay.autoresizingMask = [.width, .height]
         searchOverlayHostingView = overlay
         lastSearchOverlayStateID = searchStateID
+        scheduleDeferredSearchOverlayMutation(generation: mutationGeneration) { [weak self, weak overlay] in
+            guard let self, let overlay else { return }
+            guard self.searchOverlayHostingView === overlay else { return }
+            overlay.removeFromSuperview()
+            overlay.frame = self.bounds
+            overlay.autoresizingMask = [.width, .height]
+            self.addSubview(overlay)
+            self.updateKeyboardCopyModeBadgeZOrder(relativeTo: overlay)
+            self.requestMountedSearchFieldFocus(
+                generation: mutationGeneration,
+                force: true
+            )
+        }
     }
 
     func syncKeyStateIndicator(text: String?) {
@@ -6813,17 +9829,18 @@ final class GhosttySurfaceScrollView: NSView {
                 || subviews.last !== keyboardCopyModeBadgeContainerView
             keyboardCopyModeBadgeContainerView.isHidden = false
             if needsReorder {
-                if let overlay = searchOverlayHostingView {
-                    addSubview(keyboardCopyModeBadgeContainerView, positioned: .above, relativeTo: overlay)
-                } else {
-                    addSubview(keyboardCopyModeBadgeContainerView, positioned: .above, relativeTo: nil)
-                }
+                updateKeyboardCopyModeBadgeZOrder(relativeTo: searchOverlayHostingView)
             }
             return
         }
 
         keyboardCopyModeBadgeIconView.setAccessibilityLabel(terminalKeyTableIndicatorAccessibilityLabel)
         keyboardCopyModeBadgeContainerView.isHidden = true
+    }
+
+    func refreshHostBackgroundAfterGhosttyConfigReload() {
+        surfaceView.applySurfaceBackground()
+        surfaceView.applyWindowBackgroundIfActive()
     }
 
     private func dropZoneOverlayFrame(for zone: DropZone, in size: CGSize) -> CGRect {
@@ -6999,15 +10016,17 @@ final class GhosttySurfaceScrollView: NSView {
     }
 #endif
 
-    func triggerFlash(style: FlashStyle = .standardFocus) {
+    func triggerFlash(style: FlashStyle = .navigation) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-#if DEBUG
+            self.lastFlashStyle = style
+            #if DEBUG
             if let surfaceId = self.surfaceView.terminalSurface?.id {
                 Self.recordFlash(for: surfaceId)
             }
 #endif
             self.updateFlashPath(style: style)
+            self.updateFlashAppearance(style: style)
             self.flashLayer.removeAllAnimations()
             self.flashLayer.opacity = 0
             let animation = CAKeyframeAnimation(keyPath: "opacity")
@@ -7030,6 +10049,10 @@ final class GhosttySurfaceScrollView: NSView {
         let wasVisible = surfaceView.isVisibleInUI
         surfaceView.setVisibleInUI(visible)
         isHidden = !visible
+        if wasVisible != visible, lastRequestedPortalOcclusionVisible != visible {
+            lastRequestedPortalOcclusionVisible = visible
+            surfaceView.terminalSurface?.setOcclusion(visible)
+        }
 #if DEBUG
         if wasVisible != visible {
             let transition = "\(wasVisible ? 1 : 0)->\(visible ? 1 : 0)"
@@ -7040,6 +10063,16 @@ final class GhosttySurfaceScrollView: NSView {
             )
         }
 #endif
+        if wasVisible != visible {
+            NotificationCenter.default.post(
+                name: .terminalPortalVisibilityDidChange,
+                object: self,
+                userInfo: [
+                    GhosttyNotificationKey.surfaceId: surfaceView.terminalSurface?.id as Any,
+                    GhosttyNotificationKey.tabId: surfaceView.tabId as Any
+                ]
+            )
+        }
         if !visible {
             // If we were focused, yield first responder.
             if let window, let fr = window.firstResponder as? NSView,
@@ -7047,12 +10080,16 @@ final class GhosttySurfaceScrollView: NSView {
                 window.makeFirstResponder(nil)
             }
         } else {
-            applyFirstResponderIfNeeded()
+            scheduleAutomaticFirstResponderApply(reason: "setVisibleInUI")
         }
     }
 
     var debugPortalVisibleInUI: Bool {
         surfaceView.isVisibleInUI
+    }
+
+    var debugPortalActive: Bool {
+        isActive
     }
 
     var debugPortalFrameInWindow: CGRect {
@@ -7074,7 +10111,7 @@ final class GhosttySurfaceScrollView: NSView {
         }
 #endif
         if active {
-            applyFirstResponderIfNeeded()
+            scheduleAutomaticFirstResponderApply(reason: "setActive")
         } else {
             resignOwnedFirstResponderIfNeeded(reason: "setActive(false)")
         }
@@ -7124,7 +10161,7 @@ final class GhosttySurfaceScrollView: NSView {
 
     func moveFocus(from previous: GhosttySurfaceScrollView? = nil, delay: TimeInterval? = nil) {
 #if DEBUG
-        let surfaceShort = self.surfaceView.terminalSurface?.id.uuidString.prefix(5) ?? "nil"
+        let surfaceShort = String(self.surfaceView.terminalSurface?.id.uuidString.prefix(5) ?? "nil")
         let searchActive = self.surfaceView.terminalSurface?.searchState != nil
         dlog(
             "find.moveFocus to=\(surfaceShort) " +
@@ -7166,6 +10203,10 @@ final class GhosttySurfaceScrollView: NSView {
     @discardableResult
     func debugSimulateFileDrop(paths: [String]) -> Bool {
         surfaceView.debugSimulateFileDrop(paths: paths)
+    }
+
+    func debugPendingSurfaceSize() -> CGSize? {
+        surfaceView.debugPendingSurfaceSize()
     }
 
     func debugRegisteredDropTypes() -> [String] {
@@ -7219,15 +10260,10 @@ final class GhosttySurfaceScrollView: NSView {
 
     /// Handle file/URL drops, forwarding to the terminal as shell-escaped paths.
     func handleDroppedURLs(_ urls: [URL]) -> Bool {
-        guard !urls.isEmpty else { return false }
-        let content = urls
-            .map { GhosttyNSView.escapeDropForShell($0.path) }
-            .joined(separator: " ")
         #if DEBUG
         dlog("terminal.swiftUIDrop surface=\(surfaceView.terminalSurface?.id.uuidString.prefix(5) ?? "nil") urls=\(urls.map(\.lastPathComponent))")
         #endif
-        surfaceView.terminalSurface?.sendText(content)
-        return true
+        return surfaceView.handleDroppedFileURLs(urls)
     }
 
     func terminalViewForDrop(at point: NSPoint) -> GhosttyNSView? {
@@ -7295,14 +10331,7 @@ final class GhosttySurfaceScrollView: NSView {
     }
     #endif
 
-    func ensureFocus(for tabId: UUID, surfaceId: UUID, attemptsRemaining: Int = 3) {
-        func retry() {
-            guard attemptsRemaining > 0 else { return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
-                self?.ensureFocus(for: tabId, surfaceId: surfaceId, attemptsRemaining: attemptsRemaining - 1)
-            }
-        }
-
+    func ensureFocus(for tabId: UUID, surfaceId: UUID) {
         let hasUsablePortalGeometry: Bool = {
             let size = bounds.size
             return size.width > 1 && size.height > 1
@@ -7315,10 +10344,10 @@ final class GhosttySurfaceScrollView: NSView {
 #if DEBUG
             dlog(
                 "focus.ensure.defer surface=\(surfaceView.terminalSurface?.id.uuidString.prefix(5) ?? "nil") " +
-                "reason=not_visible attempts=\(attemptsRemaining)"
+                "reason=not_visible"
             )
 #endif
-            retry()
+            scheduleAutomaticFirstResponderApply(reason: "ensureFocus.notVisible")
             return
         }
         guard !isHiddenForFocus, hasUsablePortalGeometry else {
@@ -7326,17 +10355,17 @@ final class GhosttySurfaceScrollView: NSView {
             dlog(
                 "focus.ensure.defer surface=\(surfaceView.terminalSurface?.id.uuidString.prefix(5) ?? "nil") " +
                 "reason=hidden_or_tiny hidden=\(isHiddenForFocus ? 1 : 0) " +
-                "frame=\(String(format: "%.1fx%.1f", bounds.width, bounds.height)) attempts=\(attemptsRemaining)"
+                "frame=\(String(format: "%.1fx%.1f", bounds.width, bounds.height))"
             )
 #endif
-            retry()
+            scheduleAutomaticFirstResponderApply(reason: "ensureFocus.hiddenOrTiny")
             return
         }
 
         guard let delegate = AppDelegate.shared,
               let tabManager = delegate.tabManagerFor(tabId: tabId) ?? delegate.tabManager,
               tabManager.selectedTabId == tabId else {
-            retry()
+            scheduleAutomaticFirstResponderApply(reason: "ensureFocus.inactiveTab")
             return
         }
 
@@ -7345,13 +10374,13 @@ final class GhosttySurfaceScrollView: NSView {
               let paneId = tab.bonsplitController.allPaneIds.first(where: { paneId in
                   tab.bonsplitController.tabs(inPane: paneId).contains(where: { $0.id == tabIdForSurface })
               }) else {
-            retry()
+            scheduleAutomaticFirstResponderApply(reason: "ensureFocus.missingPane")
             return
         }
 
         guard tab.bonsplitController.selectedTab(inPane: paneId)?.id == tabIdForSurface,
               tab.bonsplitController.focusedPaneId == paneId else {
-            retry()
+            scheduleAutomaticFirstResponderApply(reason: "ensureFocus.unfocusedPane")
             return
         }
 
@@ -7361,7 +10390,7 @@ final class GhosttySurfaceScrollView: NSView {
             dlog(
                 "focus.ensure.search surface=\(surfaceView.terminalSurface?.id.uuidString.prefix(5) ?? "nil") " +
                 "tab=\(tabId.uuidString.prefix(5)) panel=\(surfaceId.uuidString.prefix(5)) " +
-                "attempts=\(attemptsRemaining) firstResponder=\(String(describing: window.firstResponder))"
+                "firstResponder=\(String(describing: window.firstResponder))"
             )
 #endif
             restoreSearchFocus(window: window)
@@ -7384,7 +10413,8 @@ final class GhosttySurfaceScrollView: NSView {
                 activeTabManager: delegate.tabManager,
                 targetTabManager: tabManager,
                 keyWindow: NSApp.keyWindow,
-                mainWindow: NSApp.mainWindow
+                mainWindow: NSApp.mainWindow,
+                targetWindow: window
             ) else {
                 return
             }
@@ -7395,13 +10425,12 @@ final class GhosttySurfaceScrollView: NSView {
         dlog(
             "focus.ensure.apply surface=\(surfaceView.terminalSurface?.id.uuidString.prefix(5) ?? "nil") " +
             "tab=\(tabId.uuidString.prefix(5)) panel=\(surfaceId.uuidString.prefix(5)) " +
-            "result=\(result ? 1 : 0) firstResponder=\(String(describing: window.firstResponder)) " +
-            "attempts=\(attemptsRemaining)"
+            "result=\(result ? 1 : 0) firstResponder=\(String(describing: window.firstResponder))"
         )
 #endif
 
         if !isSurfaceViewFirstResponder() {
-            retry()
+            scheduleAutomaticFirstResponderApply(reason: "ensureFocus.afterMakeFirstResponder")
         } else {
             reassertTerminalSurfaceFocus(reason: "ensureFocus.afterMakeFirstResponder")
         }
@@ -7431,6 +10460,42 @@ final class GhosttySurfaceScrollView: NSView {
 
     func clearSuppressReparentFocus() {
         surfaceView.suppressingReparentFocus = false
+        let hasUsablePortalGeometry: Bool = {
+            let size = bounds.size
+            return size.width > 1 && size.height > 1
+        }()
+        let isHiddenForFocus = isHiddenOrHasHiddenAncestor || surfaceView.isHiddenOrHasHiddenAncestor
+        let surfaceShort = String(surfaceView.terminalSurface?.id.uuidString.prefix(5) ?? "nil")
+        let surfaceOwnsFirstResponder = isSurfaceViewFirstResponder()
+
+        guard surfaceView.desiredFocus || surfaceOwnsFirstResponder else { return }
+        guard surfaceView.isVisibleInUI else { return }
+        surfaceView.terminalSurface?.recordExternalFocusState(true)
+        guard let window, window.isKeyWindow else { return }
+        guard !isHiddenForFocus, hasUsablePortalGeometry else {
+#if DEBUG
+            dlog(
+                "focus.reparent.resume.defer surface=\(surfaceShort) " +
+                "reason=hidden_or_tiny hidden=\(isHiddenForFocus ? 1 : 0) " +
+                "frame=\(String(format: "%.1fx%.1f", bounds.width, bounds.height))"
+            )
+#endif
+            scheduleAutomaticFirstResponderApply(reason: "clearSuppressReparentFocus.hiddenOrTiny")
+            return
+        }
+        if !surfaceOwnsFirstResponder && !isSurfaceViewFirstResponder() {
+#if DEBUG
+            dlog(
+                "focus.reparent.resume.restoreFirstResponder surface=\(surfaceShort) " +
+                "firstResponder=\(String(describing: window.firstResponder))"
+            )
+#endif
+            guard window.makeFirstResponder(surfaceView), isSurfaceViewFirstResponder() else { return }
+        }
+#if DEBUG
+        dlog("focus.reparent.resume surface=\(surfaceShort) firstResponder=\(String(describing: window.firstResponder))")
+#endif
+        reassertTerminalSurfaceFocus(reason: "clearSuppressReparentFocus")
     }
 
     /// Returns true if the terminal's actual Ghostty surface view is (or contains) the window first responder.
@@ -7441,8 +10506,25 @@ final class GhosttySurfaceScrollView: NSView {
         return fr === surfaceView || fr.isDescendant(of: surfaceView)
     }
 
+    private func scheduleAutomaticFirstResponderApply(reason: String) {
+        guard !pendingAutomaticFirstResponderApply else { return }
+        pendingAutomaticFirstResponderApply = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.pendingAutomaticFirstResponderApply = false
+#if DEBUG
+            let surfaceShort = String(self.surfaceView.terminalSurface?.id.uuidString.prefix(5) ?? "nil")
+            dlog("find.applyFirstResponder.defer surface=\(surfaceShort) reason=\(reason)")
+#endif
+            self.applyFirstResponderIfNeeded()
+        }
+    }
+
     private func reassertTerminalSurfaceFocus(reason: String) {
         guard let terminalSurface = surfaceView.terminalSurface else { return }
+        if terminalSurface.surface == nil {
+            terminalSurface.requestBackgroundSurfaceStartIfNeeded()
+        }
 #if DEBUG
         dlog("focus.surface.reassert surface=\(terminalSurface.id.uuidString.prefix(5)) reason=\(reason)")
 #endif
@@ -7474,7 +10556,7 @@ final class GhosttySurfaceScrollView: NSView {
             return size.width > 1 && size.height > 1
         }()
         let isHiddenForFocus = isHiddenOrHasHiddenAncestor || surfaceView.isHiddenOrHasHiddenAncestor
-        let surfaceShort = surfaceView.terminalSurface?.id.uuidString.prefix(5) ?? "nil"
+        let surfaceShort = String(surfaceView.terminalSurface?.id.uuidString.prefix(5) ?? "nil")
 
         guard isActive else { return }
         guard surfaceView.isVisibleInUI else { return }
@@ -7493,6 +10575,12 @@ final class GhosttySurfaceScrollView: NSView {
               matchesCurrentTerminalFocusTarget(tabId: tabId, surfaceId: panelId) else {
 #if DEBUG
             dlog("focus.apply.skip surface=\(surfaceShort) reason=stale_target")
+#endif
+            return
+        }
+        if AppDelegate.shared?.isCommandPaletteEffectivelyVisible(for: window) == true {
+#if DEBUG
+            dlog("find.applyFirstResponder SKIP surface=\(surfaceShort) reason=commandPaletteVisible")
 #endif
             return
         }
@@ -7534,9 +10622,20 @@ final class GhosttySurfaceScrollView: NSView {
     /// Restore focus when window becomes key and the find bar is open.
     /// Respects `searchFocusTarget` so Escape-to-terminal intent is preserved across window switches.
     private func restoreSearchFocus(window: NSWindow) {
-        let surfaceShort = surfaceView.terminalSurface?.id.uuidString.prefix(5) ?? "nil"
+        let surfaceShort = String(surfaceView.terminalSurface?.id.uuidString.prefix(5) ?? "nil")
         switch searchFocusTarget {
         case .searchField:
+            if let firstResponder = window.firstResponder,
+               isCurrentSurfaceSearchFieldResponder(firstResponder) {
+                surfaceView.terminalSurface?.setFocus(false)
+#if DEBUG
+                dlog(
+                    "find.restoreSearchFocus.skip surface=\(surfaceShort) target=searchField " +
+                    "reason=alreadyFocused firstResponder=\(String(describing: firstResponder))"
+                )
+#endif
+                return
+            }
             if let firstResponder = window.firstResponder,
                isSearchOverlayOrDescendant(firstResponder),
                !isCurrentSurfaceSearchResponder(firstResponder) {
@@ -7547,6 +10646,9 @@ final class GhosttySurfaceScrollView: NSView {
                     "reason=foreignSearchResponder firstResponder=\(String(describing: firstResponder))"
                 )
 #endif
+                return
+            }
+            if focusMountedSearchFieldIfAvailable(window: window, surfaceShort: surfaceShort) {
                 return
             }
             // Explicitly unfocus the terminal so cursor stops blinking immediately.
@@ -7574,6 +10676,46 @@ final class GhosttySurfaceScrollView: NSView {
         }
     }
 
+    @discardableResult
+    private func focusMountedSearchFieldIfAvailable(
+        window: NSWindow,
+        surfaceShort: String
+    ) -> Bool {
+        guard canApplyMountedSearchFieldFocusRequest() else {
+            return false
+        }
+        guard let field = mountedSearchFieldIfAvailable() else {
+            return false
+        }
+
+        let firstResponder = window.firstResponder
+        let alreadyFocused = mountedSearchFieldOwnsResponder(firstResponder, field: field)
+
+        surfaceView.terminalSurface?.setFocus(false)
+
+#if DEBUG
+        if alreadyFocused {
+            dlog(
+                "find.restoreSearchFocus.skip surface=\(surfaceShort) target=searchField " +
+                "reason=mountedFieldAlreadyFocused firstResponder=\(String(describing: firstResponder))"
+            )
+        }
+#endif
+        guard !alreadyFocused else { return true }
+
+        let result = window.makeFirstResponder(field)
+        let ownsField = mountedSearchFieldOwnsResponder(window.firstResponder, field: field)
+
+#if DEBUG
+        dlog(
+            "find.restoreSearchFocus surface=\(surfaceShort) target=searchField " +
+            "via=mountedField result=\(result ? 1 : 0) firstResponder=\(String(describing: window.firstResponder))"
+        )
+#endif
+
+        return ownsField
+    }
+
     func capturePanelFocusIntent(in window: NSWindow?) -> TerminalPanelFocusIntent {
         if surfaceView.terminalSurface?.searchState != nil {
             if let firstResponder = window?.firstResponder as? NSView,
@@ -7596,6 +10738,18 @@ final class GhosttySurfaceScrollView: NSView {
             return .findField
         }
         return .surface
+    }
+
+    func responderMatchesPreferredKeyboardFocus(_ responder: NSResponder) -> Bool {
+        switch preferredPanelFocusIntentForActivation() {
+        case .surface:
+            guard let view = resolvedKeyboardFocusOwnerView(for: responder) else { return false }
+            return view === surfaceView || view.isDescendant(of: surfaceView)
+
+        case .findField:
+            return isCurrentSurfaceSearchResponder(responder) &&
+                isSearchOverlayOrDescendant(responder)
+        }
     }
 
     func preparePanelFocusIntentForActivation(_ intent: TerminalPanelFocusIntent) {
@@ -7650,16 +10804,7 @@ final class GhosttySurfaceScrollView: NSView {
             return .findField
         }
 
-        let resolvedResponder: NSResponder
-        if let editor = responder as? NSTextView,
-           editor.isFieldEditor,
-           let editedView = editor.delegate as? NSView {
-            resolvedResponder = editedView
-        } else {
-            resolvedResponder = responder
-        }
-
-        guard let view = resolvedResponder as? NSView else { return nil }
+        guard let view = resolvedKeyboardFocusOwnerView(for: responder) else { return nil }
         if view === surfaceView || view.isDescendant(of: surfaceView) {
             return .surface
         }
@@ -7708,14 +10853,7 @@ final class GhosttySurfaceScrollView: NSView {
     /// Handles the AppKit field-editor case: when an NSTextField is being edited,
     /// window.firstResponder is the shared NSTextView field editor, not the text field.
     private func isSearchOverlayOrDescendant(_ responder: NSResponder) -> Bool {
-        // If the responder is a field editor, follow its delegate back to the owning control.
-        if let editor = responder as? NSTextView,
-           editor.isFieldEditor,
-           let editedView = editor.delegate as? NSView {
-            return isSearchOverlayOrDescendant(editedView)
-        }
-
-        guard let view = responder as? NSView else { return false }
+        guard let view = resolvedKeyboardFocusOwnerView(for: responder) else { return false }
         var current: NSView? = view
         while let v = current {
             if v is NSHostingView<SurfaceSearchOverlay> { return true }
@@ -7727,17 +10865,19 @@ final class GhosttySurfaceScrollView: NSView {
     }
 
     private func isCurrentSurfaceSearchResponder(_ responder: NSResponder) -> Bool {
-        let resolvedResponder: NSResponder
-        if let editor = responder as? NSTextView,
-           editor.isFieldEditor,
-           let editedView = editor.delegate as? NSView {
-            resolvedResponder = editedView
-        } else {
-            resolvedResponder = responder
+        guard let view = resolvedKeyboardFocusOwnerView(for: responder) else { return false }
+        return view.isDescendant(of: self)
+    }
+
+    private func isCurrentSurfaceSearchFieldResponder(_ responder: NSResponder) -> Bool {
+        if let mountedSearchField = mountedSearchFieldIfAvailable(),
+           mountedSearchFieldOwnsResponder(responder, field: mountedSearchField) {
+            return mountedSearchField.isDescendant(of: self) &&
+                isSearchOverlayOrDescendant(mountedSearchField)
         }
 
-        guard let view = resolvedResponder as? NSView else { return false }
-        return view.isDescendant(of: self)
+        guard let textField = responder as? NSTextField else { return false }
+        return textField.isDescendant(of: self) && isSearchOverlayOrDescendant(textField)
     }
 
 #if DEBUG
@@ -8025,33 +11165,13 @@ final class GhosttySurfaceScrollView: NSView {
     /// regions such as scrollbar space) when telling libghostty the terminal size.
     @discardableResult
     private func synchronizeCoreSurface() -> Bool {
-        let width = max(0, scrollView.contentSize.width - overlayScrollbarInsetWidth())
+        // Reserving extra overlay-scroller gutter here causes AppKit and libghostty to fight
+        // over terminal columns during split churn. The width can flap by one scrollbar gutter,
+        // which redraws the shell prompt multiple times on Cmd+D. Favor stable columns.
+        let width = max(0, scrollView.contentSize.width)
         let height = surfaceView.frame.height
         guard width > 0, height > 0 else { return false }
         return surfaceView.pushTargetSurfaceSize(CGSize(width: width, height: height))
-    }
-
-    /// Reserve overlay scrollbar gutter so wrapped text never sits underneath a visible scroller.
-    private func overlayScrollbarInsetWidth() -> CGFloat {
-        guard scrollView.hasVerticalScroller, scrollView.scrollerStyle == .overlay else { return 0 }
-
-        // If AppKit already reserved non-content width in `contentSize`, avoid double-subtraction.
-        let alreadyReserved = max(0, scrollView.bounds.width - scrollView.contentSize.width)
-        if alreadyReserved > 0.5 { return 0 }
-
-        let fallback = NSScroller.scrollerWidth(for: .regular, scrollerStyle: .overlay)
-        guard let verticalScroller = scrollView.verticalScroller else { return fallback }
-
-        let measuredWidth = verticalScroller.frame.width
-        if measuredWidth > 0 {
-            return max(measuredWidth, fallback)
-        }
-
-        let controlSizeWidth = NSScroller.scrollerWidth(
-            for: verticalScroller.controlSize,
-            scrollerStyle: .overlay
-        )
-        return max(controlSizeWidth, fallback)
     }
 
     private func updateNotificationRingPath() {
@@ -8067,10 +11187,7 @@ final class GhosttySurfaceScrollView: NSView {
         let inset: CGFloat
         let radius: CGFloat
         switch style {
-        case .standardFocus:
-            inset = CGFloat(FocusFlashPattern.ringInset)
-            radius = CGFloat(FocusFlashPattern.ringCornerRadius)
-        case .notificationDismiss:
+        case .navigation, .notification:
             inset = NotificationRingMetrics.inset
             radius = NotificationRingMetrics.cornerRadius
         }
@@ -8080,6 +11197,15 @@ final class GhosttySurfaceScrollView: NSView {
             inset: inset,
             radius: radius
         )
+    }
+
+    private func updateFlashAppearance(style: FlashStyle) {
+        let presentation = Self.flashPresentation(for: style)
+        let strokeColor = presentation.accent.strokeColor
+        flashLayer.strokeColor = strokeColor.cgColor
+        flashLayer.shadowColor = strokeColor.cgColor
+        flashLayer.shadowOpacity = Float(presentation.glowOpacity)
+        flashLayer.shadowRadius = presentation.glowRadius
     }
 
     private func updateOverlayRingPath(
@@ -8093,7 +11219,7 @@ final class GhosttySurfaceScrollView: NSView {
             layer.path = nil
             return
         }
-        let rect = bounds.insetBy(dx: inset, dy: inset)
+        let rect = PanelOverlayRingMetrics.pathRect(in: bounds)
         layer.path = CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil)
     }
 
@@ -8111,20 +11237,33 @@ final class GhosttySurfaceScrollView: NSView {
                 let offsetY =
                     CGFloat(scrollbar.total - scrollbar.offset - scrollbar.len) * cellHeight
                 let targetOrigin = CGPoint(x: 0, y: offsetY)
-                if !pointApproximatelyEqual(scrollView.contentView.bounds.origin, targetOrigin) {
-#if DEBUG
-                    logDragGeometryChange(
-                        event: "scrollOrigin",
-                        old: scrollView.contentView.bounds.origin,
-                        new: targetOrigin
-                    )
-#endif
+
+                // Check if we're currently at the bottom (with threshold for float drift)
+                let currentOrigin = scrollView.contentView.bounds.origin
+                let documentHeight = documentView.frame.height
+                let viewportHeight = scrollView.contentView.bounds.height
+                let distanceFromBottom = documentHeight - currentOrigin.y - viewportHeight
+                let isAtBottom = distanceFromBottom <= Self.scrollToBottomThreshold
+
+                // Update userScrolledAwayFromBottom based on current position
+                if isAtBottom {
+                    userScrolledAwayFromBottom = false
+                }
+
+                // Passive bottom packets should not override an explicit scrollback review,
+                // but the first scrollbar packet caused by the user's own wheel input should
+                // still move the viewport to the requested scrollback position.
+                let shouldAutoScroll = !userScrolledAwayFromBottom || allowExplicitScrollbarSync
+
+                if shouldAutoScroll && !pointApproximatelyEqual(currentOrigin, targetOrigin) {
                     scrollView.contentView.scroll(to: targetOrigin)
                     didChangeGeometry = true
                 }
                 lastSentRow = Int(scrollbar.offset)
             }
         }
+
+        allowExplicitScrollbarSync = false
 
         if didChangeGeometry {
             scrollView.reflectScrolledClipView(scrollView.contentView)
@@ -8142,6 +11281,14 @@ final class GhosttySurfaceScrollView: NSView {
         let visibleRect = scrollView.contentView.documentVisibleRect
         let documentHeight = documentView.frame.height
         let scrollOffset = documentHeight - visibleRect.origin.y - visibleRect.height
+
+        // Track if user has scrolled away from bottom to review scrollback
+        if scrollOffset > Self.scrollToBottomThreshold {
+            userScrolledAwayFromBottom = true
+        } else if scrollOffset <= 0 {
+            userScrolledAwayFromBottom = false
+        }
+
         let row = Int(scrollOffset / cellHeight)
 
         guard row != lastSentRow else { return }
@@ -8153,8 +11300,28 @@ final class GhosttySurfaceScrollView: NSView {
         guard let scrollbar = notification.userInfo?[GhosttyNotificationKey.scrollbar] as? GhosttyScrollbar else {
             return
         }
+        if pendingExplicitWheelScroll {
+            userScrolledAwayFromBottom = scrollbar.offset + scrollbar.len < scrollbar.total
+            allowExplicitScrollbarSync = true
+            pendingExplicitWheelScroll = false
+        }
         surfaceView.scrollbar = scrollbar
         synchronizeScrollView()
+    }
+
+    private func handlePreferredScrollerStyleChange() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.handlePreferredScrollerStyleChange()
+            }
+            return
+        }
+
+        // Retile just the scroll view so contentSize reflects the current
+        // scrollbar mode without perturbing viewport origin or hosted view
+        // geometry; the broader reconcile path caused visible content glitches.
+        scrollView.tile()
+        _ = synchronizeCoreSurface()
     }
 
     private func documentHeight() -> CGFloat {
@@ -8172,7 +11339,11 @@ final class GhosttySurfaceScrollView: NSView {
 // MARK: - NSTextInputClient
 
 extension GhosttyNSView: NSTextInputClient {
-    fileprivate func sendTextToSurface(_ chars: String) {
+    /// Deliver committed text using typed-input semantics so shells and editors
+    /// keep their normal interactive behaviors (autosuggestions, Return
+    /// execution, etc.). Programmatic callers can preserve literal ESC bytes so
+    /// automation payloads remain byte-for-byte stable.
+    fileprivate func sendTextToSurface(_ chars: String, preserveLiteralEscape: Bool) {
         guard let surface = surface else { return }
 #if DEBUG
         let typingTimingStart = CmuxTypingTiming.start()
@@ -8186,16 +11357,68 @@ extension GhosttyNSView: NSTextInputClient {
             increments: ["probeInsertTextCount": 1]
         )
 #endif
-        chars.withCString { ptr in
+
+        var bufferedText = ""
+        var previousWasCR = false
+
+        func flushBufferedText() {
+            guard !bufferedText.isEmpty else { return }
             var keyEvent = ghostty_input_key_s()
             keyEvent.action = GHOSTTY_ACTION_PRESS
             keyEvent.keycode = 0
             keyEvent.mods = GHOSTTY_MODS_NONE
             keyEvent.consumed_mods = GHOSTTY_MODS_NONE
-            keyEvent.text = ptr
+            keyEvent.unshifted_codepoint = 0
             keyEvent.composing = false
-            _ = ghostty_surface_key(surface, keyEvent)
+            bufferedText.withCString { ptr in
+                keyEvent.text = ptr
+                _ = sendGhosttyKey(surface, keyEvent)
+            }
+            bufferedText.removeAll(keepingCapacity: true)
         }
+
+        func sendControlKey(_ keycode: UInt32) {
+            var keyEvent = ghostty_input_key_s()
+            keyEvent.action = GHOSTTY_ACTION_PRESS
+            keyEvent.keycode = keycode
+            keyEvent.mods = GHOSTTY_MODS_NONE
+            keyEvent.consumed_mods = GHOSTTY_MODS_NONE
+            keyEvent.unshifted_codepoint = 0
+            keyEvent.composing = false
+            keyEvent.text = nil
+            _ = sendGhosttyKey(surface, keyEvent)
+        }
+
+        for scalar in chars.unicodeScalars {
+            switch scalar.value {
+            case 0x0A:
+                if !previousWasCR {
+                    flushBufferedText()
+                    sendControlKey(0x24) // kVK_Return
+                }
+                previousWasCR = false
+            case 0x0D:
+                flushBufferedText()
+                sendControlKey(0x24) // kVK_Return
+                previousWasCR = true
+            case 0x09:
+                flushBufferedText()
+                sendControlKey(0x30) // kVK_Tab
+                previousWasCR = false
+            case 0x1B:
+                if preserveLiteralEscape {
+                    bufferedText.unicodeScalars.append(scalar)
+                } else {
+                    flushBufferedText()
+                    sendControlKey(0x35) // kVK_Escape
+                }
+                previousWasCR = false
+            default:
+                bufferedText.unicodeScalars.append(scalar)
+                previousWasCR = false
+            }
+        }
+        flushBufferedText()
 #if DEBUG
         CmuxTypingTiming.logDuration(
             path: "terminal.sendTextToSurface",
@@ -8203,6 +11426,115 @@ extension GhosttyNSView: NSTextInputClient {
             extra: "textBytes=\(chars.utf8.count)"
         )
 #endif
+    }
+
+    /// External accessibility/dictation tools should commit plain text, but
+    /// some inject a leading escape sequence first. Strip those bytes on the
+    /// committed-text path so they can't leak into the PTY as literals.
+    static func sanitizeExternalCommittedText(_ text: String) -> String {
+        let bytes = Array(text.utf8)
+        guard !bytes.isEmpty else { return text }
+
+        var index = 0
+        while index < bytes.count {
+            let byte = bytes[index]
+            if byte == 0x1B {
+                index = consumeLeadingEscapeSequence(in: bytes, from: index)
+                continue
+            }
+
+            if byte == 0xC2 {
+                let next = index + 1
+                if next < bytes.count, bytes[next] == 0x9B {
+                    // U+009B (C1 CSI) is encoded as the UTF-8 byte pair C2 9B.
+                    index = consumeLeadingCSISequence(in: bytes, from: next + 1)
+                    continue
+                }
+            }
+
+            break
+        }
+
+        if index == 0 {
+            return text
+        }
+
+        guard index < bytes.count else { return "" }
+        return String(decoding: bytes[index...], as: UTF8.self)
+    }
+
+    private static func consumeLeadingEscapeSequence(
+        in bytes: [UInt8],
+        from start: Int
+    ) -> Int {
+        let next = start + 1
+        guard next < bytes.count else { return bytes.count }
+
+        switch bytes[next] {
+        case 0x5B:
+            // CSI: ESC [ ... final
+            return consumeLeadingCSISequence(in: bytes, from: next + 1)
+        case 0x4F:
+            // SS3: ESC O final
+            return min(bytes.count, next + 2)
+        case 0x50, 0x5D, 0x5E, 0x5F:
+            // DCS/OSC/PM/APC: consume until BEL/ST or EOF.
+            return consumeLeadingEscapedStringSequence(in: bytes, from: next + 1)
+        default:
+            // Single-character escape.
+            return min(bytes.count, next + 1)
+        }
+    }
+
+    private static func consumeLeadingCSISequence(
+        in bytes: [UInt8],
+        from start: Int
+    ) -> Int {
+        var index = start
+        while index < bytes.count {
+            let byte = bytes[index]
+            if (0x20...0x3F).contains(byte) {
+                index += 1
+                continue
+            }
+
+            if (0x40...0x7E).contains(byte) {
+                return index + 1
+            }
+
+            break
+        }
+
+        return index
+    }
+
+    private static func consumeLeadingEscapedStringSequence(
+        in bytes: [UInt8],
+        from start: Int
+    ) -> Int {
+        var index = start
+        while index < bytes.count {
+            let byte = bytes[index]
+            if byte == 0x07 {
+                return index + 1
+            }
+
+            if byte == 0x1B {
+                let next = index + 1
+                if next < bytes.count, bytes[next] == 0x5C {
+                    return next + 1
+                }
+                return index
+            }
+
+            if byte < 0x20 || byte == 0x7F {
+                return index + 1
+            }
+
+            index += 1
+        }
+
+        return bytes.count
     }
 
     func hasMarkedText() -> Bool {
@@ -8430,8 +11762,32 @@ extension GhosttyNSView: NSTextInputClient {
             return
         }
 
+        let isExternalCommittedText = externalCommittedTextDepth > 0
+        let sanitizedChars = if isExternalCommittedText {
+            // Only sanitize explicit external committed-text paths used by
+            // AX/dictation integrations. Programmatic NSTextInputClient callers
+            // may intentionally start with ESC/CSI bytes.
+            Self.sanitizeExternalCommittedText(chars)
+        } else {
+            chars
+        }
+
+#if DEBUG
+        if sanitizedChars != chars {
+            dlog(
+                "ime.insertText.sanitized originalBytes=\(chars.utf8.count) " +
+                "sanitizedBytes=\(sanitizedChars.utf8.count)"
+            )
+        }
+#endif
+
+        guard !sanitizedChars.isEmpty else { return }
+
         // Otherwise send directly to the terminal
-        sendTextToSurface(chars)
+        sendTextToSurface(
+            sanitizedChars,
+            preserveLiteralEscape: !isExternalCommittedText
+        )
     }
 }
 
@@ -8441,6 +11797,7 @@ struct GhosttyTerminalView: NSViewRepresentable {
     @Environment(\.paneDropZone) var paneDropZone
 
     let terminalSurface: TerminalSurface
+    let paneId: PaneID
     var isActive: Bool = true
     var isVisibleInUI: Bool = true
     var portalZPriority: Int = 0
@@ -8454,10 +11811,23 @@ struct GhosttyTerminalView: NSViewRepresentable {
     var onTriggerFlash: (() -> Void)? = nil
 
     private final class HostContainerView: NSView {
+        private static var nextInstanceSerial: UInt64 = 0
+
         var onDidMoveToWindow: (() -> Void)?
         var onGeometryChanged: (() -> Void)?
+        let instanceSerial: UInt64
         private(set) var geometryRevision: UInt64 = 0
         private var lastReportedGeometryState: GeometryState?
+
+        override init(frame frameRect: NSRect) {
+            Self.nextInstanceSerial &+= 1
+            instanceSerial = Self.nextInstanceSerial
+            super.init(frame: frameRect)
+        }
+
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) not implemented")
+        }
 
         private struct GeometryState: Equatable {
             let frame: CGRect
@@ -8537,8 +11907,39 @@ struct GhosttyTerminalView: NSViewRepresentable {
         return !hostedViewHasSuperview
     }
 
+    static func shouldSynchronizePortalGeometryImmediately(
+        hostInLiveResize: Bool,
+        windowInLiveResize: Bool,
+        interactiveGeometryResizeActive: Bool
+    ) -> Bool {
+        hostInLiveResize || windowInLiveResize || interactiveGeometryResizeActive
+    }
+
+    private static func synchronizePortalGeometry(
+        for host: HostContainerView,
+        coordinator: Coordinator
+    ) {
+        let geometryRevision = host.geometryRevision
+        guard coordinator.lastSynchronizedHostGeometryRevision != geometryRevision else { return }
+        coordinator.lastSynchronizedHostGeometryRevision = geometryRevision
+        let window = host.window
+        if shouldSynchronizePortalGeometryImmediately(
+            hostInLiveResize: host.inLiveResize,
+            windowInLiveResize: window?.inLiveResize == true,
+            interactiveGeometryResizeActive: TerminalWindowPortalRegistry.isInteractiveGeometryResizeActive
+        ) {
+            TerminalWindowPortalRegistry.synchronizeForAnchor(host)
+            return
+        }
+        // Avoid synchronizing the terminal portal while AppKit is still inside
+        // the current layout turn. Re-entrant syncs here can wedge window resize
+        // handling and leave the app spinning on the wait cursor.
+        guard let window else { return }
+        TerminalWindowPortalRegistry.scheduleExternalGeometrySynchronize(for: window)
+    }
+
     func makeNSView(context: Context) -> NSView {
-        let container = HostContainerView()
+        let container = HostContainerView(frame: .zero)
         container.wantsLayer = false
         // The actual terminal surface lives in the AppKit portal layer above SwiftUI.
         // This empty placeholder should not be walked by the accessibility subsystem.
@@ -8589,6 +11990,8 @@ struct GhosttyTerminalView: NSViewRepresentable {
         let hostOwnsPortalNow = hostContainer.map { host in
             terminalSurface.claimPortalHost(
                 hostId: ObjectIdentifier(host),
+                paneId: paneId,
+                instanceSerial: host.instanceSerial,
                 inWindow: host.window != nil,
                 bounds: host.bounds,
                 reason: "update"
@@ -8611,6 +12014,12 @@ struct GhosttyTerminalView: NSViewRepresentable {
         }
         let portalExpectedSurfaceId = terminalSurface.id
         let portalExpectedGeneration = terminalSurface.portalBindingGeneration()
+        func portalBindingStillLive() -> Bool {
+            terminalSurface.canAcceptPortalBinding(
+                expectedSurfaceId: portalExpectedSurfaceId,
+                expectedGeneration: portalExpectedGeneration
+            )
+        }
         let forwardedDropZone = isVisibleInUI ? paneDropZone : nil
 #if DEBUG
         if coordinator.lastPaneDropZone != paneDropZone {
@@ -8644,11 +12053,14 @@ struct GhosttyTerminalView: NSViewRepresentable {
                 guard coordinator.attachGeneration == generation else { return }
                 guard terminalSurface.claimPortalHost(
                     hostId: ObjectIdentifier(host),
+                    paneId: paneId,
+                    instanceSerial: host.instanceSerial,
                     inWindow: host.window != nil,
                     bounds: host.bounds,
                     reason: "didMoveToWindow"
                 ) else { return }
                 guard host.window != nil else { return }
+                guard portalBindingStillLive() else { return }
                 TerminalWindowPortalRegistry.bind(
                     hostedView: hostedView,
                     to: host,
@@ -8668,10 +12080,13 @@ struct GhosttyTerminalView: NSViewRepresentable {
                 guard coordinator.attachGeneration == generation else { return }
                 guard terminalSurface.claimPortalHost(
                     hostId: ObjectIdentifier(host),
+                    paneId: paneId,
+                    instanceSerial: host.instanceSerial,
                     inWindow: host.window != nil,
                     bounds: host.bounds,
                     reason: "geometryChanged"
                 ) else { return }
+                guard portalBindingStillLive() else { return }
                 let hostId = ObjectIdentifier(host)
                 if host.window != nil,
                    (coordinator.lastBoundHostId != hostId ||
@@ -8696,11 +12111,14 @@ struct GhosttyTerminalView: NSViewRepresentable {
                     hostedView.setActive(coordinator.desiredIsActive)
                     hostedView.setNotificationRing(visible: coordinator.desiredShowsUnreadNotificationRing)
                 }
-                TerminalWindowPortalRegistry.synchronizeForAnchor(host)
-                coordinator.lastSynchronizedHostGeometryRevision = host.geometryRevision
+                Self.synchronizePortalGeometry(
+                    for: host,
+                    coordinator: coordinator
+                )
             }
 
             if host.window != nil, hostOwnsPortalNow {
+                let portalBindingLive = portalBindingStillLive()
                 let hostId = ObjectIdentifier(host)
                 let geometryRevision = host.geometryRevision
                 let portalEntryMissing = !TerminalWindowPortalRegistry.isHostedView(hostedView, boundTo: host)
@@ -8711,7 +12129,7 @@ struct GhosttyTerminalView: NSViewRepresentable {
                     previousDesiredIsVisibleInUI != isVisibleInUI ||
                     previousDesiredShowsUnreadNotificationRing != showsUnreadNotificationRing ||
                     previousDesiredPortalZPriority != portalZPriority
-                if shouldBindNow {
+                if portalBindingLive && shouldBindNow {
 #if DEBUG
                     if portalEntryMissing {
                         dlog(
@@ -8731,11 +12149,13 @@ struct GhosttyTerminalView: NSViewRepresentable {
                     )
                     coordinator.lastBoundHostId = hostId
                     coordinator.lastSynchronizedHostGeometryRevision = geometryRevision
-                } else if coordinator.lastSynchronizedHostGeometryRevision != geometryRevision {
-                    TerminalWindowPortalRegistry.synchronizeForAnchor(host)
-                    coordinator.lastSynchronizedHostGeometryRevision = geometryRevision
+                } else if portalBindingLive && coordinator.lastSynchronizedHostGeometryRevision != geometryRevision {
+                    Self.synchronizePortalGeometry(
+                        for: host,
+                        coordinator: coordinator
+                    )
                 }
-            } else if hostOwnsPortalNow {
+            } else if hostOwnsPortalNow, portalBindingStillLive() {
                 // Bind is deferred until host moves into a window. Update the
                 // existing portal entry's visibleInUI now so that any portal sync
                 // that runs before the deferred bind completes won't hide the view.
@@ -8765,7 +12185,7 @@ struct GhosttyTerminalView: NSViewRepresentable {
             isBoundToCurrentHost: isBoundToCurrentHost
         )
 
-        if shouldApplyImmediateHostedState {
+        if portalBindingStillLive() && shouldApplyImmediateHostedState {
             hostedView.setVisibleInUI(isVisibleInUI)
             hostedView.setActive(isActive)
         } else {
@@ -8814,15 +12234,15 @@ struct GhosttyTerminalView: NSViewRepresentable {
         if let host = nsView as? HostContainerView {
             host.onDidMoveToWindow = nil
             host.onGeometryChanged = nil
-            hostedView?.releaseOwnedPortalHost(
+            hostedView?.prepareOwnedPortalHostForTransientReattach(
                 hostId: ObjectIdentifier(host),
                 reason: "dismantle"
             )
         }
 
         // SwiftUI can transiently dismantle/rebuild NSViewRepresentable instances during split
-        // tree updates. Do not force visible/active false here; that causes avoidable blackouts
-        // when the same hosted view is rebound moments later.
+        // tree updates. Do not drop the portal lease or force visible/active false here; that
+        // causes avoidable blackouts when the same hosted view is rebound moments later.
         hostedView?.setFocusHandler(nil)
         hostedView?.setTriggerFlashHandler(nil)
         hostedView?.setDropZoneOverlay(zone: nil)
