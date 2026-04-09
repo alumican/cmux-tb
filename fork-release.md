@@ -184,6 +184,19 @@ The Release build's `PRODUCT_NAME` is `cmux` (not `cmux-tb`). The build artifact
 
 `create-dmg` generates a DMG named after the app (`cmux *.dmg`). Use `mv ./cmux*.dmg "$DMG_RELEASE"` to rename it to `cmux-tb-macos.dmg`. The glob `cmux-tb*.dmg` will not match — use `cmux*.dmg` instead.
 
+### Sparkle appcast parse error: `Attribute length redefined`
+
+The `sparkle_generate_appcast.sh` fallback signing path (`sign_update`) injects `sparkle:edSignature` and `length` into the `<enclosure>` element. If `generate_appcast` already wrote a `length` attribute, the injection creates a duplicate, producing invalid XML that Sparkle rejects with `SUAppcastParseError (1000)`.
+
+This happens when `generate_appcast` adds `length` but skips the EdDSA signature (e.g. because the public key in the built app doesn't match the private key). The script then falls through to the `sign_update` fallback and naively injects another `length`.
+
+**Fix (applied in v0.63.2-tb13):** The fallback now uses `re.sub(r'length="[^"]*"', ...)` to update the existing `length` attribute instead of adding a new one. If this error recurs after modifying the appcast script, check for duplicate XML attributes in the generated `appcast.xml`:
+
+```bash
+curl -fsSL https://github.com/alumican/cmux-tb/releases/latest/download/appcast.xml | grep -o 'length=' | wc -l
+# Should be exactly 1
+```
+
 ## Reference: release-tb.yml (as of v0.63.2-tb13)
 
 ```yaml
