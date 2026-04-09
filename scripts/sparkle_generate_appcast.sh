@@ -102,16 +102,19 @@ if ! grep -q 'sparkle:edSignature' "$generated_appcast_path"; then
   echo "  EdDSA signature: ${SIGNATURE:0:20}..."
   echo "  DMG length: $DMG_LENGTH"
 
-  # Inject sparkle:edSignature and correct length into the enclosure element
+  # Inject sparkle:edSignature into the enclosure element and ensure length is correct.
+  # generate_appcast may already include a length attribute, so we update it rather than adding a duplicate.
   python3 -c "
-import sys
+import sys, re
 xml = open('$generated_appcast_path').read()
 sig = '$SIGNATURE'
 length = '$DMG_LENGTH'
-# Add edSignature to enclosure
+# Update existing length attribute to correct value
+xml = re.sub(r'length=\"[^\"]*\"', 'length=\"' + length + '\"', xml)
+# Add edSignature before type attribute
 xml = xml.replace(
     'type=\"application/octet-stream\"',
-    'sparkle:edSignature=\"' + sig + '\" length=\"' + length + '\" type=\"application/octet-stream\"'
+    'sparkle:edSignature=\"' + sig + '\" type=\"application/octet-stream\"'
 )
 open('$generated_appcast_path', 'w').write(xml)
 print('  Injected edSignature into appcast.xml')
