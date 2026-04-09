@@ -580,7 +580,7 @@ enum TextBoxInputSettings {
     static let escapeBehaviorKey = "textBoxEscapeBehavior"
     static let shortcutBehaviorKey = "textBoxShortcutBehavior"
 
-    static let defaultEnabled = false
+    static let defaultEnabled = true // [TextBox] [cmux-tb] Enabled by default in fork
     static let defaultEnterToSend = true
     static let defaultEscapeBehavior = TextBoxEscapeBehavior.sendEscape
     static let defaultShortcutBehavior = TextBoxShortcutBehavior.toggleFocus
