@@ -174,17 +174,17 @@ Requires `brew install create-dmg` and npm `create-dmg` for the background image
 
 ### `error: zig is required to build the Ghostty CLI helper`
 
-GitHub Actions の macOS ランナーには Zig がプリインストールされていない。`Install Zig` ステップが必要。
+Zig is not pre-installed on GitHub Actions macOS runners. The `Install Zig` step is required.
 
-### `cmux-tb.app: No such file or directory` (Codesign 失敗)
+### `cmux-tb.app: No such file or directory` (Codesign failure)
 
-Release ビルドの `PRODUCT_NAME` は `cmux`（`cmux-tb` ではない）。ビルド成果物は `build/Build/Products/Release/cmux.app` になる。ワークフロー内のすべてのパスを `cmux.app` に統一すること。
+The Release build's `PRODUCT_NAME` is `cmux` (not `cmux-tb`). The build artifact is at `build/Build/Products/Release/cmux.app`. All paths in the workflow must reference `cmux.app`.
 
-### `create-dmg` の出力 DMG 名
+### `create-dmg` output DMG name
 
-`create-dmg` はアプリ名ベースで DMG を生成する（`cmux *.dmg`）。`mv ./cmux*.dmg "$DMG_RELEASE"` で `cmux-tb-macos.dmg` にリネームする。`cmux-tb*.dmg` の glob ではマッチしないので注意。
+`create-dmg` generates a DMG named after the app (`cmux *.dmg`). Use `mv ./cmux*.dmg "$DMG_RELEASE"` to rename it to `cmux-tb-macos.dmg`. The glob `cmux-tb*.dmg` will not match — use `cmux*.dmg` instead.
 
-## Reference: release-tb.yml (v0.63.2-tb13 時点)
+## Reference: release-tb.yml (as of v0.63.2-tb13)
 
 ```yaml
 name: Release cmux-tb
