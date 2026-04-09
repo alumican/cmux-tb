@@ -3,18 +3,19 @@
   "version": "1.0",
   "strings": {
     "about.appName": {
+      "comment": "[cmux-tb] Fork app name",
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "cmux"
+            "value": "cmux + TextBox"
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "cmux"
+            "value": "cmux + TextBox"
           }
         },
         "zh-Hans": {
@@ -659,18 +660,19 @@
       }
     },
     "about.description": {
+      "comment": "[cmux-tb] Fork description",
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "A Ghostty-based terminal with vertical tabs\nand a notification panel for macOS."
+            "value": "A fork of cmux with a built-in TextBox input mode."
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "Ghosttyベースの縦タブ付きターミナルと\nmacOS用通知パネル。"
+            "value": "TextBox入力モードを内蔵したcmuxのフォーク。"
           }
         },
         "zh-Hans": {

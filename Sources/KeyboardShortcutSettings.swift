@@ -262,8 +262,9 @@ enum KeyboardShortcutSettings {
                 return StoredShortcut(key: "g", command: true, shift: true, option: false, control: false)
 
             // [TextBox]
+            // [cmux-tb] Default: Cmd+Opt+T (upstream cmux PR uses Cmd+Opt+B to avoid conflict with close-other-tabs)
             case .toggleTextBoxInput:
-                return StoredShortcut(key: "b", command: true, shift: false, option: true, control: false)
+                return StoredShortcut(key: "t", command: true, shift: false, option: true, control: false)
             }
         }
 
