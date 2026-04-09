@@ -198,4 +198,5 @@ All fork-specific changes are marked with `// [cmux-tb]` or `<!-- [cmux-tb] -->`
 6. Send Feedback and Discord are hidden
 7. Sparkle update check points to fork appcast
 8. Version number is correct in About dialog
-9. If upstream added new localized strings, consider adding Japanese translations
+9. **`CURRENT_PROJECT_VERSION` is higher than the previous fork release** — upstream merge resets it to the upstream value, which is lower than the fork's. Check the previous release's appcast: `curl -fsSL https://github.com/alumican/cmux-tb/releases/download/v<prev-tag>/appcast.xml | grep 'sparkle:version'`
+10. If upstream added new localized strings, consider adding Japanese translations

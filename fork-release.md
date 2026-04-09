@@ -164,7 +164,11 @@ Requires `brew install create-dmg` and npm `create-dmg` for the background image
 ## Notes
 
 - The DMG asset must be named `cmux-tb-macos.dmg` to match the README download link.
-- Build number (`CURRENT_PROJECT_VERSION`) must always increase — never reuse or go backwards.
+- Build number (`CURRENT_PROJECT_VERSION`) must always increase — never reuse or go backwards. **After an upstream merge, the build number in `project.pbxproj` will be reset to the upstream value, which is almost certainly lower than the fork's.** Always check the previous fork release's appcast to find the last published build number and set the new one higher:
+  ```bash
+  curl -fsSL https://github.com/alumican/cmux-tb/releases/download/v<previous-tag>/appcast.xml | grep 'sparkle:version'
+  ```
+  For example, v0.62.2-tb12 had build 91 but upstream v0.63.2 had 79. Setting tb13 to 80 broke the Sparkle upgrade path because 80 < 91. The fix was to set it to 92.
 - The `release-tb.yml` workflow only triggers on tags matching `v*-tb*`. The upstream `release.yml` triggers on all `v*` tags but will fail (requires Depot runner).
 - Always create releases as **draft** first, then publish after CI attaches the DMG. This prevents the README download link from 404-ing during the build.
 - Release notes should link to the upstream cmux version: `[cmux vX.Y.Z](https://github.com/manaflow-ai/cmux/releases/tag/vX.Y.Z)`.
