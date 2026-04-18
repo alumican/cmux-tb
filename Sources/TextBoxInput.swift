@@ -975,6 +975,16 @@ struct TextBoxInputView: NSViewRepresentable {
         container.layer?.borderColor = terminalForegroundColor.withAlphaComponent(opacity).cgColor
     }
 
+    /// Clear undo operations targeting this text view before SwiftUI tears
+    /// down the representable. The window's NSUndoManager retains targets
+    /// registered by NSTextView (allowsUndo); without cleanup a later Cmd+Z
+    /// can invoke `_undoRedoTextOperation:` on the deallocated view.
+    static func dismantleNSView(_ container: NSView, coordinator: Coordinator) {
+        guard let scrollView = container.subviews.first as? NSScrollView,
+              let textView = scrollView.documentView as? InputTextView else { return }
+        textView.undoManager?.removeAllActions(withTarget: textView)
+    }
+
     // MARK: Coordinator
 
     final class Coordinator: NSObject, NSTextViewDelegate {
@@ -1073,6 +1083,12 @@ final class InputTextView: NSTextView {
     var enterToSend: Bool = false
     /// Current terminal process title, used for app detection in key routing.
     var terminalTitle: String = ""
+
+    /// Safety net: if ARC deallocates this view outside the normal
+    /// dismantleNSView path, ensure no dangling undo targets remain.
+    deinit {
+        undoManager?.removeAllActions(withTarget: self)
+    }
 
     /// Set by keyDown when a key event was already forwarded to the terminal,
     /// so insertText can skip the duplicate insertion that the input method
