@@ -2,6 +2,11 @@
 
 All notable changes to cmux are documented here.
 
+## [0.63.2-tb14] - 2026-04-18
+
+### Fixed
+- Fix TextBox Cmd+Z (Undo) crash caused by dangling NSUndoManager target after view teardown ([#16](https://github.com/alumican/cmux-tb/issues/16))
+
 ## [0.63.2] - 2026-04-06
 
 ### Added
