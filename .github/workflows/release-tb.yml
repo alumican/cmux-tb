@@ -67,8 +67,15 @@ jobs:
       - name: Build app (Release)
         run: |
           export PATH="/usr/local/bin:$PATH"
+          # Skip the Ghostty CLI helper zig build: zig 0.15.2 fails to link
+          # against the macOS 26 SDK on the macos-26 runner (libSystem
+          # symbols come up undefined). scripts/build-ghostty-cli-helper.sh
+          # writes a stub when this is set, matching the local dev behavior
+          # that scripts/reload.sh applies automatically on macOS 26.
+          export CMUX_SKIP_ZIG_BUILD=1
           xcodebuild -scheme cmux -configuration Release -derivedDataPath build \
             -clonedSourcePackagesDirPath .spm-cache \
+            CMUX_SKIP_ZIG_BUILD=1 \
             CODE_SIGNING_ALLOWED=NO build
 
       # [TextBox] Verify Sparkle public key is baked into the built app
