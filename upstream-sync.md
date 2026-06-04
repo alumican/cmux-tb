@@ -166,6 +166,7 @@ All fork-specific changes are marked with `// [cmux-tb]` or `<!-- [cmux-tb] -->`
 - `Resources/Info.plist` — `CFBundleDisplayName = cmux-tb`, `SUFeedURL` → fork
 - `Sources/cmuxApp.swift` — About dialog GitHub/commit URLs → fork
 - `Resources/Localizable.xcstrings` — `about.appName = "cmux + TextBox"`, fork description
+- `GhosttyTabs.xcodeproj/project.pbxproj` — **`SPARKLE_PUBLIC_KEY`** (Debug + Release build settings). Upstream's value MUST be replaced with the fork's, or the Sparkle signature in the released appcast will fail validation against the installed app's `SUPublicEDKey` and updates silently break. Current fork value: `9b5y17ghBG9Mw+wwdYGVA1VrQ335MFLPtyLsIjnIkyU=` (rotated in tb15.1 after the tb13 merge clobbered the original `l3TMx3bk...` back to upstream's value, leaving every tb13–tb15 release Sparkle-unverifiable). Verify post-merge by running `swift scripts/derive_sparkle_public_key.swift "<GitHub secret value>"` and comparing to the value in `project.pbxproj`.
 
 ### Default settings (differ from upstream)
 - `Sources/KeyboardShortcutSettings.swift` — TextBox shortcut default `Cmd+Opt+T` (upstream: `Cmd+Opt+B`)
@@ -199,4 +200,10 @@ All fork-specific changes are marked with `// [cmux-tb]` or `<!-- [cmux-tb] -->`
 7. Sparkle update check points to fork appcast
 8. Version number is correct in About dialog
 9. **`CURRENT_PROJECT_VERSION` is higher than the previous fork release** — upstream merge resets it to the upstream value, which is lower than the fork's. Check the previous release's appcast: `curl -fsSL https://github.com/alumican/cmux-tb/releases/download/v<prev-tag>/appcast.xml | grep 'sparkle:version'`
-10. If upstream added new localized strings, consider adding Japanese translations
+10. **`SPARKLE_PUBLIC_KEY` in `GhosttyTabs.xcodeproj/project.pbxproj` still matches the fork value, not upstream's.** Upstream merge silently rewrites this and a mismatched Sparkle key pair breaks the auto-update path for every subsequent release until rotated. Verify locally — fetch a recent fork release's appcast, download its DMG, and re-sign / re-verify against the current `SPARKLE_PUBLIC_KEY`:
+    ```bash
+    # Build a tiny CryptoKit verifier (see scripts/derive_sparkle_public_key.swift for the import dance)
+    # and confirm `pubKey.isValidSignature(sigData, for: dmgData)` returns true.
+    ```
+    If verification fails, the public key in `project.pbxproj` was clobbered by the merge — restore the fork value before tagging the release.
+11. If upstream added new localized strings, consider adding Japanese translations

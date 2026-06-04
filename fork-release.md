@@ -201,6 +201,35 @@ curl -fsSL https://github.com/alumican/cmux-tb/releases/latest/download/appcast.
 # Should be exactly 1
 ```
 
+### Sparkle update fails on the client with `SUValidationError` (code 4005)
+
+Symptoms: clients see `SUSparkleErrorDomain(4005) | underlying=SUSparkleErrorDomain(10) Update validation was a failure` from Sparkle and the update never installs. The appcast XML parses fine and the DMG downloads — only the EdDSA signature check fails.
+
+Root cause: the `SPARKLE_PUBLIC_KEY` baked into the released app's `Info.plist` (via `project.pbxproj`) does not match the public key derived from the `SPARKLE_PRIVATE_KEY` GitHub secret used to sign the appcast. The `sign_update` fallback in `sparkle_generate_appcast.sh` happily signs with whatever private key the workflow hands it, so a mismatched pair produces a structurally valid appcast that no installed client can verify.
+
+**Historical context (v0.63.2-tb15.1):** The first fork Sparkle setup put the fork public key `l3TMx3bk...` into `project.pbxproj`. The tb13 upstream merge silently rewrote `SPARKLE_PUBLIC_KEY` back to upstream's value `avjcgKibf...`, but the GitHub secret continued holding the `l3TMx3bk...` private key. From tb13 through tb15, every released appcast carried an EdDSA signature unverifiable against any installed client. tb15.1 rotated to a fresh pair and added a checklist entry to `upstream-sync.md`.
+
+**Verify locally before tagging a release:**
+
+```bash
+# 1. Confirm secret/pbxproj are paired
+swift scripts/derive_sparkle_public_key.swift "$(grep '^SPARKLE_PRIVATE_KEY=' .env | cut -d= -f2-)"
+# Must equal the SPARKLE_PUBLIC_KEY value in GhosttyTabs.xcodeproj/project.pbxproj.
+
+# 2. After release, verify a published DMG end-to-end
+curl -fsSL --output /tmp/check.dmg https://github.com/alumican/cmux-tb/releases/download/<tag>/cmux-tb-macos.dmg
+SIG=$(curl -fsSL https://github.com/alumican/cmux-tb/releases/download/<tag>/appcast.xml | grep -oE 'sparkle:edSignature="[^"]+"' | sed 's/sparkle:edSignature="//; s/"$//')
+swift -e '
+import CryptoKit, Foundation
+let pub = "<SPARKLE_PUBLIC_KEY from project.pbxproj>"
+let sig = "'"$SIG"'"
+let pk = try Curve25519.Signing.PublicKey(rawRepresentation: Data(base64Encoded: pub)!)
+print(pk.isValidSignature(Data(base64Encoded: sig)!, for: try Data(contentsOf: URL(fileURLWithPath: "/tmp/check.dmg"))) ? "VALID" : "INVALID")
+'
+```
+
+**Recovering from a mismatch in a shipped release:** generate a new key pair with `scripts/sparkle_generate_keys.sh`, update both `SPARKLE_PUBLIC_KEY` in `project.pbxproj` and the GitHub secret, bump the version, and ship a hotfix tag. Existing installs whose `SUPublicEDKey` no longer matches the new pair will need a one-time manual DMG download; future Sparkle updates work normally once they're on the rotated key.
+
 ## Reference: release-tb.yml (as of v0.63.2-tb13)
 
 ```yaml
