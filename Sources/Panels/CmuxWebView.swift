@@ -102,6 +102,19 @@ enum BrowserImageCopyPasteboardBuilder {
     }
 }
 
+/// True for Cmd+Z (undo) and Cmd+Shift+Z (redo). Used by browser key routing
+/// to keep these out of the app menu's Edit > Undo path, which can crash on a
+/// stale NSUndoManager target left by a previously-deallocated text view. (#16)
+func cmuxIsUndoOrRedoCommandEquivalent(_ event: NSEvent) -> Bool {
+    let flags = event.modifierFlags
+        .intersection(.deviceIndependentFlagsMask)
+        .subtracting([.numericPad, .function, .capsLock])
+    guard flags.contains(.command) else { return false }
+    guard flags.subtracting([.command, .shift]).isEmpty else { return false }
+    let chars = event.charactersIgnoringModifiers?.lowercased()
+    return chars == "z"
+}
+
 /// WKWebView tends to consume some Command-key equivalents (e.g. Cmd+N/Cmd+W),
 /// preventing the app menu/SwiftUI Commands from receiving them. Route app/menu
 /// shortcuts first by default, but allow browser content to try the Find command
@@ -241,6 +254,19 @@ final class CmuxWebView: WKWebView {
         // Menu/app shortcut routing is only needed for Command equivalents
         // (New Tab, Close Tab, tab switching, split commands, etc).
         guard flags.contains(.command) else {
+            let result = super.performKeyEquivalent(with: event)
+#if DEBUG
+            handled = result
+#endif
+            return result
+        }
+
+        // Cmd+Z / Cmd+Shift+Z must go to WebKit for web content undo/redo,
+        // not through NSApp.mainMenu's Edit > Undo. The app menu's undo:
+        // walks the responder chain and can invoke a stale text undo target
+        // left over from an old TextBox text view, causing a use-after-free
+        // crash inside NSUndoManager.undoNestedGroup. (#16)
+        if cmuxIsUndoOrRedoCommandEquivalent(event) {
             let result = super.performKeyEquivalent(with: event)
 #if DEBUG
             handled = result
