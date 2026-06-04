@@ -10,7 +10,7 @@
 <p align="center">Version 0.63.2-tb15.2 (Updated 2026/6/4)</p>
 
 > [!NOTE]
-> This fork originally started to bring a text box input field to cmux, but TextBox has now been added to upstream cmux in v0.64.10. This fork will stop receiving updates, and future TextBox feature work will continue on the upstream branch. Thank you for all the issue reports. See [Discussion #20](https://github.com/alumican/cmux-tb/discussions/20) for details.
+> This fork originally started to bring a text box input field to cmux, but TextBox has now been added to upstream cmux in v0.64.10. This fork will stop receiving updates, and future TextBox feature work will continue on the upstream branch. Thanks to everyone who used the fork and filed issues — your reports drove many improvements along the way. We're truly grateful.
 
 <br>
 

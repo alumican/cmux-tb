@@ -10,7 +10,7 @@
 <p align="center">バージョン 0.63.2-tb15.2（2026/6/4更新）</p>
 
 > [!NOTE]
-> 元々このforkはcmuxにテキストボックスフィールド入力を追加するために開始しましたが、cmux v0.64.10 においてupstreamにTextBoxが追加されました。本forkは今後更新を停止し、これ以降のTextBoxへの新機能追加はupstreamのbranchでおこなう予定です。活発なissue報告をいただき、誠にありがとうございました。詳細は [Discussion #20](https://github.com/alumican/cmux-tb/discussions/20) をご覧ください。
+> 元々このforkはcmuxにテキストボックスフィールド入力を追加するために開始しましたが、cmux v0.64.10 においてupstreamにTextBoxが追加されました。本forkは今後更新を停止し、これ以降のTextBoxへの新機能追加はupstreamのbranchでおこなう予定です。たくさんのご利用と活発なissue報告をいただき、多くの改善をおこなうことができました。誠にありがとうございました。
 
 <br>
 
