@@ -9,11 +9,8 @@
 
 <p align="center">Version 0.63.2-tb15.2 (Updated 2026/6/4)</p>
 
-> [!Warning]
-> On macOS 14 (Sonoma) / macOS 15 (Sequoia), versions prior to 0.62.2-tb7 have a bug where text typed in the TextBox is not displayed. Please select "Check for updates" from the "?" button in the bottom-left corner to update to the latest version.
-
-> [!Warning]
-> Versions 0.63.2-tb14 and earlier could SEGV with Cmd+Z (Undo) due to a dangling NSUndoManager target — fully fixed in 0.63.2-tb15.2 ([#16](https://github.com/alumican/cmux-tb/issues/16)). The Sparkle public key shipped before 0.63.2-tb15.1 also could not verify the current release signature, so **users on tb14 or earlier need to download the DMG manually once** from the link above; future updates will then come through "Check for Updates" normally.
+> [!NOTE]
+> This fork originally started to bring a text box input field to cmux, but TextBox has now been added to upstream cmux in v0.64.10. This fork will stop receiving updates, and future TextBox feature work will continue on the upstream branch. Thank you for all the issue reports. See [Discussion #20](https://github.com/alumican/cmux-tb/discussions/20) for details.
 
 <br>
 
