@@ -976,13 +976,15 @@ struct TextBoxInputView: NSViewRepresentable {
     }
 
     /// Clear undo operations targeting this text view before SwiftUI tears
-    /// down the representable. The window's NSUndoManager retains targets
-    /// registered by NSTextView (allowsUndo); without cleanup a later Cmd+Z
-    /// can invoke `_undoRedoTextOperation:` on the deallocated view. (#16)
+    /// down the representable. The text view's allowsUndo registers actions
+    /// whose target is the text view itself; if the underlying undo manager
+    /// is shared via the responder chain (or anything outlives the text
+    /// view), a later Cmd+Z can invoke `_undoRedoTextOperation:` on the
+    /// deallocated view. Sweep self off every reachable undo manager. (#16)
     static func dismantleNSView(_ container: NSView, coordinator: Coordinator) {
         guard let scrollView = container.subviews.first as? NSScrollView,
               let textView = scrollView.documentView as? InputTextView else { return }
-        textView.undoManager?.removeAllActions(withTarget: textView)
+        textView.purgeUndoActionsTargetingSelf()
     }
 
     // MARK: Coordinator
@@ -1088,6 +1090,48 @@ final class InputTextView: NSTextView {
     /// dismantleNSView path, ensure no dangling undo targets remain. (#16)
     deinit {
         undoManager?.removeAllActions(withTarget: self)
+    }
+
+    /// Called by AppKit before the view is moved out of (or into) a window.
+    /// When the view is leaving its current window, the responder chain is
+    /// still intact and any undo manager that registered actions for self
+    /// is still reachable. Sweep them now; once the view is detached the
+    /// chain lookup returns nil and cleanup at deinit is a no-op. (#16)
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow !== window {
+            purgeUndoActionsTargetingSelf()
+        }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
+    /// Remove every undo action whose target is this text view from any
+    /// undo manager reachable via the responder chain (self, window,
+    /// next responders). NSTextView with allowsUndo may register actions
+    /// against the text view in either its own private manager or one
+    /// supplied by the responder chain depending on the host; sweeping
+    /// every reachable manager makes the cleanup independent of that
+    /// detail. (#16)
+    func purgeUndoActionsTargetingSelf() {
+        undoManager?.removeAllActions(withTarget: self)
+        var seen = Set<ObjectIdentifier>()
+        if let mine = undoManager {
+            seen.insert(ObjectIdentifier(mine))
+        }
+        var responder: NSResponder? = self
+        var hops = 0
+        while let current = responder, hops < 32 {
+            if let manager = current.undoManager,
+               !seen.contains(ObjectIdentifier(manager)) {
+                seen.insert(ObjectIdentifier(manager))
+                manager.removeAllActions(withTarget: self)
+            }
+            responder = current.nextResponder
+            hops += 1
+        }
+        if let windowManager = window?.undoManager,
+           !seen.contains(ObjectIdentifier(windowManager)) {
+            windowManager.removeAllActions(withTarget: self)
+        }
     }
 
     /// Set by keyDown when a key event was already forwarded to the terminal,
