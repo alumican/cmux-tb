@@ -2,10 +2,16 @@
 
 All notable changes to cmux are documented here.
 
+## [0.63.2-tb15] - 2026-06-04
+
+### Fixed
+- Fully fix TextBox Cmd+Z (Undo) SEGV by sweeping all reachable NSUndoManagers via `viewWillMove(toWindow:)` while the responder chain is still intact ([#16](https://github.com/alumican/cmux-tb/issues/16))
+- Fix embedded browser (CmuxWebView) Cmd+Z SEGV by routing undo/redo directly to WebKit instead of through the app menu's Edit > Undo ([#16](https://github.com/alumican/cmux-tb/issues/16))
+
 ## [0.63.2-tb14] - 2026-04-18
 
 ### Fixed
-- Fix TextBox Cmd+Z (Undo) crash caused by dangling NSUndoManager target after view teardown ([#16](https://github.com/alumican/cmux-tb/issues/16))
+- Initial (incomplete) fix for TextBox Cmd+Z (Undo) crash caused by dangling NSUndoManager target after view teardown ([#16](https://github.com/alumican/cmux-tb/issues/16))
 
 ## [0.63.2] - 2026-04-06
 
