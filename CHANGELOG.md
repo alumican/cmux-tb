@@ -2,11 +2,18 @@
 
 All notable changes to cmux are documented here.
 
+## [0.63.2-tb15.1] - 2026-06-04
+
+### Fixed
+- Rotate Sparkle EdDSA key pair so the appcast signature actually verifies against the public key embedded in the app. tb15 (and all prior tb releases) shipped with a `SPARKLE_PRIVATE_KEY` GitHub secret that did not derive to the `SUPublicEDKey` baked into Info.plist, so Sparkle update validation always failed (error 4005 / SUValidationError). **One-time manual download required**: existing users on tb14 or earlier cannot update to tb15.1 via Sparkle because their installed app has the old public key. After installing tb15.1 manually, future Sparkle updates will work.
+
 ## [0.63.2-tb15] - 2026-06-04
 
 ### Fixed
 - Fully fix TextBox Cmd+Z (Undo) SEGV by sweeping all reachable NSUndoManagers via `viewWillMove(toWindow:)` while the responder chain is still intact ([#16](https://github.com/alumican/cmux-tb/issues/16))
 - Fix embedded browser (CmuxWebView) Cmd+Z SEGV by routing undo/redo directly to WebKit instead of through the app menu's Edit > Undo ([#16](https://github.com/alumican/cmux-tb/issues/16))
+
+> ⚠️ tb15's appcast signature does not verify against the embedded `SUPublicEDKey`. Use tb15.1 instead — same code, working Sparkle signature.
 
 ## [0.63.2-tb14] - 2026-04-18
 
