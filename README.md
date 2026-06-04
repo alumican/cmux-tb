@@ -12,6 +12,9 @@
 > [!Warning]
 > On macOS 14 (Sonoma) / macOS 15 (Sequoia), versions prior to 0.62.2-tb7 have a bug where text typed in the TextBox is not displayed. Please select "Check for updates" from the "?" button in the bottom-left corner to update to the latest version.
 
+> [!Warning]
+> Versions 0.63.2-tb14 and earlier could SEGV with Cmd+Z (Undo) due to a dangling NSUndoManager target — fully fixed in 0.63.2-tb15.2 ([#16](https://github.com/alumican/cmux-tb/issues/16)). The Sparkle public key shipped before 0.63.2-tb15.1 also could not verify the current release signature, so **users on tb14 or earlier need to download the DMG manually once** from the link above; future updates will then come through "Check for Updates" normally.
+
 <br>
 
 <p align="center">
