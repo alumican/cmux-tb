@@ -7,7 +7,7 @@
   </a>
 </p>
 
-<p align="center">Version 0.63.2-tb15.1 (Updated 2026/6/4)</p>
+<p align="center">Version 0.63.2-tb15.2 (Updated 2026/6/4)</p>
 
 > [!Warning]
 > On macOS 14 (Sonoma) / macOS 15 (Sequoia), versions prior to 0.62.2-tb7 have a bug where text typed in the TextBox is not displayed. Please select "Check for updates" from the "?" button in the bottom-left corner to update to the latest version.

@@ -2,6 +2,11 @@
 
 All notable changes to cmux are documented here.
 
+## [0.63.2-tb15.2] - 2026-06-04
+
+### Fixed
+- Fully fix TextBox Cmd+Z (Undo) SEGV that still reproduced on tb15.1 from "type in TextBox → open a new tab → close that tab → Cmd+Z" ([#16](https://github.com/alumican/cmux-tb/issues/16), [#19](https://github.com/alumican/cmux-tb/pull/19)). Root cause: with `allowsUndo = true` and no `undoManager(for:)` delegate, NSTextView registered its undo actions in a manager resolved via the responder chain (often the window's), and that manager kept the action alive after the text view was deallocated. `TextBoxInputView.Coordinator` now owns a private `UndoManager` and returns it from `undoManager(for view:)`, so the undo stack shares the text view's lifecycle and dangling targets are impossible by construction.
+
 ## [0.63.2-tb15.1] - 2026-06-04
 
 ### Fixed
