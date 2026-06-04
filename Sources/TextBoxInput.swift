@@ -994,8 +994,22 @@ struct TextBoxInputView: NSViewRepresentable {
         weak var textView: NSTextView?
         weak var container: NSView?
 
+        /// Coordinator-owned NSUndoManager returned from
+        /// `undoManager(for:)`. This decouples NSTextView's undo stack
+        /// from the responder chain / window-level managers — when this
+        /// Coordinator is released (representable dismantle, SwiftUI
+        /// view recreation on tab switch, etc.) ARC tears the manager
+        /// down with the text view, so undo actions registered against
+        /// the text view cannot dangle inside a manager that outlives
+        /// it. (#16)
+        let ownedUndoManager = UndoManager()
+
         init(_ parent: TextBoxInputView) {
             self.parent = parent
+        }
+
+        func undoManager(for view: NSTextView) -> UndoManager? {
+            return ownedUndoManager
         }
 
         func updateBorderOpacity(focused: Bool) {
